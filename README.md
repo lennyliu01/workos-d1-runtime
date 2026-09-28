@@ -70,7 +70,6 @@ curl -sS https://d1-runtime-prototype.lennyliu01.workers.dev/prototype/time-roun
 
 Prototype 0 remains isolated from WorkOS production authority.
 
-
 ## Prototype 1 state compare-and-set core
 
 Prototype 1 adds an authoritative append-only state transition path:
