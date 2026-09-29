@@ -175,7 +175,7 @@ async function case4(): Promise<void> {
 
 async function case5(): Promise<void> {
   const p = new MemoryProvider(); seed(p);
-  const fault = new FaultInjectingProvider(p, "WITNESS", root.mutationAllowlist, {
+  const fault = new FaultInjectingProvider(p, "WITNESS", [authority, activation, protection, epochs, session], {
     control: "FAULT_SOURCE_UNREADABLE",
     designatedLocator: activation,
   });
