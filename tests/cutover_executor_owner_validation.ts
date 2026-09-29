@@ -235,11 +235,30 @@ async function case8(): Promise<void> {
   const core = new ExecutorCore(p);
   const run = await core.execute(makeInput());
   assert(run.ok, "CASE_8 initial execution failed");
-  const close = await core.closeSessionAfterRelay("WITNESS", "SESSION_001", root, {
-    preparedReadbackExact: true,
-    committedReadbackExact: true,
-  });
+
+  let relayStatus: "PREPARED" | "COMMITTED" = "PREPARED";
+  const verifier = {
+    async verify(status: "PREPARED" | "COMMITTED", sessionId: string): Promise<boolean> {
+      return status === relayStatus && sessionId === "SESSION_001";
+    },
+  };
+
+  const prepared = await core.acknowledgeRelayPrepared("WITNESS", "SESSION_001", root, verifier);
+  assert(
+    prepared.ok && prepared.status === "RELAY_PREPARED_VERIFIED",
+    "CASE_8 PREPARED readback was not mechanically persisted",
+  );
+
+  const deniedAfterPrepared = await core.execute(makeInput());
+  assert(
+    !deniedAfterPrepared.ok && deniedAfterPrepared.stop === "SESSION_MUTATION_CAPABILITY_CLOSED",
+    "CASE_8 mutation capability remained open after PREPARED readback",
+  );
+
+  relayStatus = "COMMITTED";
+  const close = await core.closeSessionAfterRelay("WITNESS", "SESSION_001", root, verifier);
   assert(close.ok && close.status === "COMPLETE", "CASE_8 session close failed");
+
   const before = [...p.mutationCount.values()].reduce((a, b) => a + b, 0);
   const denied = await core.execute(makeInput());
   const after = [...p.mutationCount.values()].reduce((a, b) => a + b, 0);
