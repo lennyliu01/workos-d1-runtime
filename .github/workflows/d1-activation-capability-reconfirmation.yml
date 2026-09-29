@@ -1,0 +1,114 @@
+name: D1 Activation Capability Reconfirmation
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  reconfirm:
+    if: github.event.issue.title == '[CAPABILITY_RECONFIRM] D1_T0_V1'
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PROBE_TABLE: __workos_capability_probe_v1
+      PROBE_ID: APMR1-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Verify exact provider binding and credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          grep -F '"database_name": "d1-runtime-prototype-db"' wrangler.jsonc
+          grep -F '"database_id": "b4e4ccf6-107b-4a8b-b679-0be7ef6bd48c"' wrangler.jsonc
+
+      - name: Materialize bounded non-business probe control table
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute d1-runtime-prototype-db --remote --command "CREATE TABLE IF NOT EXISTS $PROBE_TABLE (probe_id TEXT PRIMARY KEY, version INTEGER NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);"
+
+      - name: Reconfirm D1 write read and conditional-update capability
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pre="$(npx wrangler d1 execute d1-runtime-prototype-db --remote --json --command "SELECT COUNT(*) AS c FROM $PROBE_TABLE WHERE probe_id='$PROBE_ID';" | jq -r '.[0].results[0].c')"
+          test "$pre" -eq 0
+
+          npx wrangler d1 execute d1-runtime-prototype-db --remote --command "INSERT INTO $PROBE_TABLE (probe_id,version,payload,created_at) VALUES ('$PROBE_ID',1,'ACL_WRITE_PROBE',datetime('now'));"
+
+          inserted="$(npx wrangler d1 execute d1-runtime-prototype-db --remote --json --command "SELECT version,payload FROM $PROBE_TABLE WHERE probe_id='$PROBE_ID' LIMIT 1;" | jq -c '.[0].results[0]')"
+          test "$(echo "$inserted" | jq -r '.version')" -eq 1
+          test "$(echo "$inserted" | jq -r '.payload')" = "ACL_WRITE_PROBE"
+
+          npx wrangler d1 execute d1-runtime-prototype-db --remote --command "UPDATE $PROBE_TABLE SET version=2,payload='ACL_CAS_PROBE' WHERE probe_id='$PROBE_ID' AND version=1;"
+
+          updated="$(npx wrangler d1 execute d1-runtime-prototype-db --remote --json --command "SELECT version,payload FROM $PROBE_TABLE WHERE probe_id='$PROBE_ID' LIMIT 1;" | jq -c '.[0].results[0]')"
+          test "$(echo "$updated" | jq -r '.version')" -eq 2
+          test "$(echo "$updated" | jq -r '.payload')" = "ACL_CAS_PROBE"
+
+          npx wrangler d1 execute d1-runtime-prototype-db --remote --command "DELETE FROM $PROBE_TABLE WHERE probe_id='$PROBE_ID';"
+
+          post="$(npx wrangler d1 execute d1-runtime-prototype-db --remote --json --command "SELECT COUNT(*) AS c FROM $PROBE_TABLE WHERE probe_id='$PROBE_ID';" | jq -r '.[0].results[0].c')"
+          test "$post" -eq 0
+
+          echo "D1_CAPABILITY_RECONFIRMATION_RESULT=PASS"
+          echo "PROBE_ID=$PROBE_ID"
+          echo "PROBE_NAMESPACE=$PROBE_TABLE"
+          echo "PRODUCTION_BUSINESS_DATA_MUTATED=FALSE"
+
+      - name: Publish exact terminal evidence
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        shell: bash
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --repo "$REPOSITORY" --body "D1_ACTIVATION_CAPABILITY_RECONFIRMATION
+          Result: PASS
+          Probe_ID: $PROBE_ID
+          Probe_Namespace: $PROBE_TABLE
+          Provider_Config_ID: D1PC1_912872ea68566b777e17808cd910033fb33c7169578e0b1080f8196531ac005c
+          Capability_Matrix_Version: PCM4_D1_T0_V1
+          Writer_Identity: SHARED_ARCHIVE_INFRASTRUCTURE
+          Database_Name: d1-runtime-prototype-db
+          Database_ID: b4e4ccf6-107b-4a8b-b679-0be7ef6bd48c
+          APPEND_WRITE: PASS
+          BOUNDED_READ: PASS
+          CONDITIONAL_CURRENT_STATE_WRITE_AUTHORIZATION: PASS
+          Probe_Row_Deleted: TRUE
+          Production_Business_Data_Mutated: FALSE
+          Workflow_Commit: $GITHUB_SHA
+          Workflow_Run_ID: $GITHUB_RUN_ID"
+
+      - name: Publish failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        shell: bash
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --repo "$REPOSITORY" --body "D1_ACTIVATION_CAPABILITY_RECONFIRMATION
+          Result: FAIL
+          Probe_ID: $PROBE_ID
+          Probe_Namespace: $PROBE_TABLE
+          Production_Business_Data_Mutated: FALSE
+          Workflow_Commit: $GITHUB_SHA
+          Workflow_Run_ID: $GITHUB_RUN_ID"
