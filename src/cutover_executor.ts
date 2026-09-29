@@ -210,6 +210,10 @@ async function readOrStop(
   }
 }
 
+function isExecutorStop(value: ExactRecord | ExecutorStop): value is ExecutorStop {
+  return (value as { ok?: unknown }).ok === false;
+}
+
 export class ExecutorCore {
   constructor(private readonly provider: ControlPlaneProvider) {}
 
@@ -220,7 +224,7 @@ export class ExecutorCore {
     }
 
     const session = await readOrStop(this.provider, input.root.locators.sessionCapability);
-    if ("ok" in session) return session;
+    if (isExecutorStop(session)) return session;
     if (asString(session.Session_ID) !== input.sessionId) {
       return { ok: false, stop: "SESSION_ID_MISMATCH" };
     }
@@ -232,13 +236,13 @@ export class ExecutorCore {
     }
 
     const authority = await readOrStop(this.provider, input.root.locators.authorityPublication);
-    if ("ok" in authority) return authority;
+    if (isExecutorStop(authority)) return authority;
     const candidate = await readOrStop(this.provider, input.root.locators.candidateActivation);
-    if ("ok" in candidate) return candidate;
+    if (isExecutorStop(candidate)) return candidate;
     const protection = await readOrStop(this.provider, input.root.locators.protection);
-    if ("ok" in protection) return protection;
+    if (isExecutorStop(protection)) return protection;
     const usedEpochs = await readOrStop(this.provider, input.root.locators.usedEpochs);
-    if ("ok" in usedEpochs) return usedEpochs;
+    if (isExecutorStop(usedEpochs)) return usedEpochs;
 
     const currentCutover = asString(authority.Current_Committed_Cutover_ID);
     const currentEpoch = parseInteger(authority.Current_Activation_Epoch);
@@ -293,7 +297,7 @@ export class ExecutorCore {
       }
 
       const before = await readOrStop(this.provider, step.target);
-      if ("ok" in before) return before;
+      if (isExecutorStop(before)) return before;
       if (exactEqual(before, step.desiredAfter)) {
         recoveredSteps.push(step.id);
         continue;
@@ -322,7 +326,7 @@ export class ExecutorCore {
         reconciledAmbiguousSteps.push(step.id);
       } else {
         const after = await readOrStop(this.provider, step.target);
-        if ("ok" in after) return after;
+        if (isExecutorStop(after)) return after;
         if (!exactEqual(after, step.desiredAfter)) {
           return { ok: false, stop: "POSTCONDITION_MISMATCH", detail: step.id };
         }
@@ -353,7 +357,7 @@ export class ExecutorCore {
       return { ok: false, stop: "RELAY_FINALITY_NOT_PROVEN" };
     }
     const before = await readOrStop(this.provider, root.locators.sessionCapability);
-    if ("ok" in before) return before;
+    if (isExecutorStop(before)) return before;
     if (asString(before.Session_ID) !== sessionId) {
       return { ok: false, stop: "SESSION_ID_MISMATCH" };
     }
@@ -378,7 +382,7 @@ export class ExecutorCore {
       }
     } else {
       const after = await readOrStop(this.provider, root.locators.sessionCapability);
-      if ("ok" in after) return after;
+      if (isExecutorStop(after)) return after;
       if (!exactEqual(after, desired)) {
         return { ok: false, stop: "POSTCONDITION_MISMATCH" };
       }
