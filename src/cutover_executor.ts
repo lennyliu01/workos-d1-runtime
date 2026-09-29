@@ -88,7 +88,7 @@ export interface ControlPlaneProvider {
 
 export interface ExecutorSuccess {
   ok: true;
-  status: "READY_FOR_RELAY" | "COMPLETE";
+  status: "READY_FOR_RELAY" | "RELAY_PREPARED_VERIFIED" | "COMPLETE";
   recoveredSteps: readonly string[];
   mutatedSteps: readonly string[];
   reconciledAmbiguousSteps: readonly string[];
@@ -102,9 +102,34 @@ export interface ExecutorStop {
 
 export type ExecutorResult = ExecutorSuccess | ExecutorStop;
 
-export interface RelayFinalityReceipt {
-  preparedReadbackExact: boolean;
-  committedReadbackExact: boolean;
+export type RelayTerminalStatus = "PREPARED" | "COMMITTED";
+
+export interface RelayFinalityVerifier {
+  verify(status: RelayTerminalStatus, sessionId: string): Promise<boolean>;
+}
+
+export class ExactRelayRowVerifier implements RelayFinalityVerifier {
+  constructor(
+    private readonly provider: ControlPlaneProvider,
+    private readonly rowLocator: SheetsLocator,
+    private readonly expectedRunId: string,
+    private readonly expectedAgentId: string,
+  ) {}
+
+  async verify(status: RelayTerminalStatus, sessionId: string): Promise<boolean> {
+    let row: ExactRecord;
+    try {
+      row = await this.provider.readExact(this.rowLocator);
+    } catch {
+      return false;
+    }
+    return (
+      row.run_id === this.expectedRunId &&
+      row.agent_id === this.expectedAgentId &&
+      row.session_id === sessionId &&
+      row.status === status
+    );
+  }
 }
 
 const locatorKey = (x: SheetsLocator): string =>
@@ -228,11 +253,8 @@ export class ExecutorCore {
     if (asString(session.Session_ID) !== input.sessionId) {
       return { ok: false, stop: "SESSION_ID_MISMATCH" };
     }
-    if (session.Capability_State === "CLOSED") {
-      return { ok: false, stop: "SESSION_MUTATION_CAPABILITY_CLOSED" };
-    }
     if (session.Capability_State !== "OPEN") {
-      return { ok: false, stop: "ACTIVATION_OBJECT_DRIFT", detail: "session state must be OPEN" };
+      return { ok: false, stop: "SESSION_MUTATION_CAPABILITY_CLOSED" };
     }
 
     const authority = await readOrStop(this.provider, input.root.locators.authorityPublication);
@@ -343,58 +365,98 @@ export class ExecutorCore {
     };
   }
 
-  async closeSessionAfterRelay(
+  private async transitionSessionCapability(
     mode: ExecutorMode,
     sessionId: string,
     root: TargetRoot,
-    receipt: RelayFinalityReceipt,
+    expectedState: string,
+    desiredState: string,
   ): Promise<ExecutorResult> {
     if (mode === "WITNESS") {
       const boundary = witnessBoundaryStop(root);
       if (boundary) return boundary;
-    }
-    if (!receipt.preparedReadbackExact || !receipt.committedReadbackExact) {
-      return { ok: false, stop: "RELAY_FINALITY_NOT_PROVEN" };
     }
     const before = await readOrStop(this.provider, root.locators.sessionCapability);
     if (isExecutorStop(before)) return before;
     if (asString(before.Session_ID) !== sessionId) {
       return { ok: false, stop: "SESSION_ID_MISMATCH" };
     }
-    if (before.Capability_State === "CLOSED") {
+    if (before.Capability_State !== expectedState) {
       return { ok: false, stop: "SESSION_MUTATION_CAPABILITY_CLOSED" };
     }
-    if (before.Capability_State !== "OPEN") {
-      return { ok: false, stop: "ACTIVATION_OBJECT_DRIFT" };
-    }
 
-    const desired: ExactRecord = { Session_ID: sessionId, Capability_State: "CLOSED" };
+    const desired: ExactRecord = { Session_ID: sessionId, Capability_State: desiredState };
     const result = await this.provider.mutateExact(root.locators.sessionCapability, desired);
-    if (result.outcome === "AMBIGUOUS") {
-      let afterAmbiguous: ExactRecord;
-      try {
-        afterAmbiguous = await this.provider.readExact(root.locators.sessionCapability);
-      } catch {
-        return { ok: false, stop: "MUTATION_OUTCOME_AMBIGUOUS" };
-      }
-      if (!exactEqual(afterAmbiguous, desired)) {
-        return { ok: false, stop: "MUTATION_OUTCOME_AMBIGUOUS" };
-      }
-    } else {
-      const after = await readOrStop(this.provider, root.locators.sessionCapability);
-      if (isExecutorStop(after)) return after;
-      if (!exactEqual(after, desired)) {
-        return { ok: false, stop: "POSTCONDITION_MISMATCH" };
-      }
+    let after: ExactRecord;
+    try {
+      after = await this.provider.readExact(root.locators.sessionCapability);
+    } catch {
+      return {
+        ok: false,
+        stop: result.outcome === "AMBIGUOUS" ? "MUTATION_OUTCOME_AMBIGUOUS" : "SOURCE_UNREADABLE",
+      };
+    }
+    if (!exactEqual(after, desired)) {
+      return {
+        ok: false,
+        stop: result.outcome === "AMBIGUOUS" ? "MUTATION_OUTCOME_AMBIGUOUS" : "POSTCONDITION_MISMATCH",
+      };
     }
     return {
       ok: true,
-      status: "COMPLETE",
+      status: desiredState === "CLOSED" ? "COMPLETE" : "RELAY_PREPARED_VERIFIED",
       recoveredSteps: [],
-      mutatedSteps: ["SESSION_CAPABILITY_CLOSE"],
-      reconciledAmbiguousSteps: [],
+      mutatedSteps: [desiredState === "CLOSED" ? "SESSION_CAPABILITY_CLOSE" : "SESSION_RELAY_PREPARED_ACK"],
+      reconciledAmbiguousSteps: result.outcome === "AMBIGUOUS"
+        ? [desiredState === "CLOSED" ? "SESSION_CAPABILITY_CLOSE" : "SESSION_RELAY_PREPARED_ACK"]
+        : [],
     };
   }
+
+  async acknowledgeRelayPrepared(
+    mode: ExecutorMode,
+    sessionId: string,
+    root: TargetRoot,
+    verifier: RelayFinalityVerifier,
+  ): Promise<ExecutorResult> {
+    let verified = false;
+    try {
+      verified = await verifier.verify("PREPARED", sessionId);
+    } catch {
+      verified = false;
+    }
+    if (!verified) return { ok: false, stop: "RELAY_FINALITY_NOT_PROVEN" };
+    return this.transitionSessionCapability(
+      mode,
+      sessionId,
+      root,
+      "OPEN",
+      "RELAY_PREPARED_VERIFIED",
+    );
+  }
+
+  async closeSessionAfterRelay(
+    mode: ExecutorMode,
+    sessionId: string,
+    root: TargetRoot,
+    verifier: RelayFinalityVerifier,
+  ): Promise<ExecutorResult> {
+    let verified = false;
+    try {
+      verified = await verifier.verify("COMMITTED", sessionId);
+    } catch {
+      verified = false;
+    }
+    if (!verified) return { ok: false, stop: "RELAY_FINALITY_NOT_PROVEN" };
+    return this.transitionSessionCapability(
+      mode,
+      sessionId,
+      root,
+      "RELAY_PREPARED_VERIFIED",
+      "CLOSED",
+    );
+  }
+
 }
 
 export interface GoogleSheetsProviderOptions {
@@ -529,6 +591,14 @@ export class FaultInjectingProvider implements ControlPlaneProvider {
     }
     return real;
   }
+}
+
+export async function deterministicFixtureInitialize(
+  provider: ControlPlaneProvider,
+  root: TargetRoot,
+  snapshot: ReadonlyMap<SheetsLocator, ExactRecord>,
+): Promise<void> {
+  await deterministicFixtureReset(provider, root, snapshot);
 }
 
 export async function deterministicFixtureReset(
