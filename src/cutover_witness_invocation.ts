@@ -111,6 +111,37 @@ const frozenActivation: ExactRecord = {
   Target_Acceptance_Binding_ID: "AB_FIXTURE",
 };
 
+export interface CutoverWitnessProviderReadiness {
+  provider: "GoogleSheetsControlPlaneProvider";
+  fixture_root_id: typeof MATERIALIZED_FIXTURE_ROOT_ID;
+  fixture_spreadsheet_id: typeof MATERIALIZED_FIXTURE_SPREADSHEET_ID;
+  exact_readback: true;
+  credential_present: true;
+  credential_value_disclosed: false;
+}
+
+export async function probeCutoverWitnessProviderReadiness(
+  accessToken: string,
+  fetchImpl?: typeof fetch,
+): Promise<CutoverWitnessProviderReadiness> {
+  if (!accessToken) throw new Error("GOOGLE_PROVIDER_CREDENTIAL_UNAVAILABLE");
+
+  const provider = new GoogleSheetsControlPlaneProvider({ accessToken, fetchImpl });
+  const readback = await provider.readExact(activation);
+  if (!exactEqual(readback, frozenActivation)) {
+    throw new Error("GOOGLE_PROVIDER_FIXTURE_READBACK_MISMATCH");
+  }
+
+  return {
+    provider: "GoogleSheetsControlPlaneProvider",
+    fixture_root_id: MATERIALIZED_FIXTURE_ROOT_ID,
+    fixture_spreadsheet_id: MATERIALIZED_FIXTURE_SPREADSHEET_ID,
+    exact_readback: true,
+    credential_present: true,
+    credential_value_disclosed: false,
+  };
+}
+
 function locatorKey(locator: SheetsLocator): string {
   return [
     locator.logicalIdentity,
