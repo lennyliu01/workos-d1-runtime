@@ -1,0 +1,64 @@
+{
+  "status": "NON_AUTHORITATIVE_IMPLEMENTATION_CANDIDATE",
+  "semantic_candidate": {
+    "drive_id": "1Fx9H4_xJ1g6dr_E3D1rO0bLUajJ2DOErRiAsdrgztcA",
+    "revision_id": "ANLCKQlKEc3SdEIV92c1vHst-IRCr_ZWVmBr8nkdcyJfB6CJ98RtptAfRDthu_QkOyFtv2_rQrK7FGYgQjzEvebCK6iA7p1jWRT7nclz70A"
+  },
+  "parent_accepted_basis": {
+    "repository": "lennyliu01/workos-d1-runtime",
+    "commit": "df54a572b03c9f6ca4aa118bacb3d41805c19cd5",
+    "acceptance_binding_id": "AB1_033cc2303356f400eb36344e87dec0a2a430749521a759afe167e2e2fce12367",
+    "implementation_build_id": "IB1_1953c80a6c7d984778f9cd7da7ef18bf5de81bcff50491b681f93015a530bb3f",
+    "mutation_adapter_fingerprint": "04da1eb1e7a8148268cdb2c5cc3b368749bb7318c8649beaec4d96ff724a3836",
+    "provider_config_id": "D1PC1_912872ea68566b777e17808cd910033fb33c7169578e0b1080f8196531ac005c"
+  },
+  "classification": {
+    "fixture_disposable_state": "CONDITIONALLY_NON_GOVERNED_CHANGE",
+    "executor_witness_mode": "CHANGE_EXISTING_SHARED_RUNTIME_INFRASTRUCTURE",
+    "fault_injection_session_guard": "CHANGE_EXISTING_SHARED_RUNTIME_INFRASTRUCTURE",
+    "new_top_level_identity": "NONE"
+  },
+  "implementation": {
+    "same_executor_core": "src/cutover_executor.ts#ExecutorCore",
+    "production_mode": true,
+    "witness_mode": true,
+    "fixture_authority": false,
+    "google_provider_primitive": "Google Sheets API v4 exact range GET + values.update PUT",
+    "fault_controls": [
+      "FAULT_SOURCE_UNREADABLE",
+      "FAULT_AMBIGUOUS_AFTER_COMMIT",
+      "FAULT_AMBIGUOUS_UNRESOLVED"
+    ],
+    "session_guard": "OPEN -> Relay PREPARED/readback -> COMMITTED/readback -> CLOSED",
+    "official_governed_witness_executed": false
+  },
+  "production_denylist": {
+    "repository_cutover_control": "1Ckqy598EPE9CO3gejn2b0sLC3IC1_FcwScRFPE2JumM",
+    "archive_acceptance_control": "12bKGkui-DrcFjW4k2stW2vp8o8uqILaBNl57qztqFKM",
+    "registry_file": "10aqM2xEzuCOCxvqzivNQJVCjl-trvrC12S5lXvzE9fY",
+    "archive_schema_catalog": "1R3K-tcZLT-AXEClTWNt3djlVijSZNog-EYl_PS5Rkw8",
+    "agents": "1vLsNv3YZK-dAJh7jln7KbGLfWzp2k3ec",
+    "data_archive_contract": "1n1YPmM6V8j4VCeVHZo1e2AvKjoVz4KFjXlpqBPqRnx8",
+    "current_manifest_files": [
+      "1ROEy5RyJ7pWNyZYm8hmzssV3cbwnvPNGCG3qxMSTDco",
+      "1sO97-59J4m0FlO8AZOyVIq3qdKvkJQQaoSElksyyEXQ",
+      "1ba86fQs0YH5a07OHcVDmsAKpYA0z95P9vIBc1fUxGuw",
+      "1Ny77wFr1LvJMc3LhLixFUwbqGYC_GdHTnQj1F3jq8h4",
+      "1bfcfUsNtrfvGscstI3l9jIdYdAVg5nODpsLTTPQ3h5I"
+    ],
+    "schedule_ids": [
+      "6aaaa975a4e8819189c56bce4f1fbcaa",
+      "6aabae742b4c819197c722b6cc8d643b",
+      "6aa64baf51648191845f153791c2ec73"
+    ]
+  },
+  "identity_impact": {
+    "implementation_build_id": "MUST_CHANGE_IF_ACCEPTED",
+    "mutation_adapter_fingerprint": "MUST_CHANGE_IF_ACCEPTED",
+    "provider_config_id": "MUST_CHANGE_IF_ACCEPTED_BECAUSE_GOOGLE_CONTROL_PLANE_FINALITY_CONFIGURATION_IS_ADDED_TO_AFFECTED_SCOPE",
+    "runtime_component_projection": "MUST_ADD_CUTOVER_EXECUTOR_IMPLEMENTATION_AND_WITNESS_PROVIDER_BINDING_IF_ACCEPTED",
+    "capability_records": "MUST_ADD_AFFECTED_SCOPE_OWNER_VALIDATION_AND_REAL_PROVIDER_CONFORMANCE_BEFORE_ACCEPTANCE",
+    "acceptance_binding": "MUST_CHANGE_IF_ACCEPTED",
+    "current_accepted_binding_mutated": false
+  }
+}

@@ -1,0 +1,33 @@
+name: Cutover Witness Infrastructure Owner Validation
+
+on:
+  pull_request:
+    paths:
+      - "src/cutover_executor.ts"
+      - "src/cutover_witness_fixture.ts"
+      - "tests/cutover_executor_owner_validation.ts"
+      - "tests/cutover_candidate_binding_validation.ts"
+      - "candidate_evidence/cutover_witness_infra_pcv_repair_20260930_01.json"
+      - "package.json"
+      - ".github/workflows/cutover-witness-infra-owner-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  owner-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        run: npm install
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Implementation-level owner validation
+        run: npm run test:cutover-owner
+      - name: Successor identity and binding validation
+        run: npx tsx tests/cutover_candidate_binding_validation.ts
