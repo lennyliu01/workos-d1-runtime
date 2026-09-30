@@ -1,4 +1,8 @@
 import { handleWorkOsCandidatePersistence } from "./workos_candidate";
+import {
+  CutoverWitnessInvocationRequest,
+  invokeCutoverWitness,
+} from "./cutover_witness_invocation";
 
 type ExecutionSurface = "CHAT" | "WORK";
 type TriggerMode = "HUMAN" | "SCHEDULE";
@@ -32,6 +36,7 @@ interface D1Database {
 interface Env {
   DB: D1Database;
   RUNTIME_SECRET?: string;
+  CUTOVER_WITNESS_GOOGLE_ACCESS_TOKEN?: string;
 }
 
 interface TimeRoundtripRequest {
@@ -699,6 +704,32 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/candidate/workos-persistence") {
       return handleWorkOsCandidatePersistence(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/cutover/witness") {
+      const authError = authenticate(request, env);
+      if (authError) return authError;
+      if (!env.CUTOVER_WITNESS_GOOGLE_ACCESS_TOKEN) {
+        return jsonError("CUTOVER_WITNESS_GOOGLE_PROVIDER_NOT_CONFIGURED", 503);
+      }
+      const body = await parseJson(request);
+      if (body === null || typeof body !== "object" || Array.isArray(body)) {
+        return jsonError("INVALID_WITNESS_INVOCATION", 400);
+      }
+      try {
+        const result = await invokeCutoverWitness(
+          body as CutoverWitnessInvocationRequest,
+          env.CUTOVER_WITNESS_GOOGLE_ACCESS_TOKEN,
+        );
+        return Response.json({
+          status: "SUCCESS",
+          ...result,
+        });
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "CUTOVER_WITNESS_INVOCATION_FAILED";
+        const status = code === "GOOGLE_PROVIDER_CREDENTIAL_UNAVAILABLE" ? 503 : 400;
+        return jsonError(code, status);
+      }
     }
 
     return Response.json(
