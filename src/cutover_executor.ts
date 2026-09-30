@@ -1,3 +1,11 @@
+import {
+  FROZEN_PRODUCTION_DENYLIST,
+  MATERIALIZED_FIXTURE_PRODUCTION_DENYLIST_ID,
+  MATERIALIZED_FIXTURE_ROOT_ID,
+  MATERIALIZED_FIXTURE_SPREADSHEET_ID,
+} from "./cutover_witness_fixture";
+export { FROZEN_PRODUCTION_DENYLIST } from "./cutover_witness_fixture";
+
 export type ExecutorMode = "PRODUCTION" | "WITNESS";
 export type FaultControl =
   | "NONE"
@@ -27,7 +35,11 @@ export type ExactRecord = Readonly<Record<string, Scalar>>;
 export interface SheetsLocator {
   provider: "GOOGLE_SHEETS_V4";
   spreadsheetId: string;
+  sheetId: number;
   range: string;
+  startRowIndex: number;
+  startColumnIndex: number;
+  logicalIdentity: string;
   columns: readonly string[];
   headerRange?: string;
 }
@@ -43,6 +55,8 @@ export interface RootLocators {
 export interface TargetRoot {
   rootId: string;
   fixtureAuthority: false | null;
+  fixtureSpreadsheetId: string;
+  productionDenylistId: string;
   locators: RootLocators;
   mutationAllowlist: readonly SheetsLocator[];
 }
@@ -133,7 +147,16 @@ export class ExactRelayRowVerifier implements RelayFinalityVerifier {
 }
 
 const locatorKey = (x: SheetsLocator): string =>
-  [x.provider, x.spreadsheetId, x.range, x.columns.join(",")].join("|");
+  [
+    x.provider,
+    x.spreadsheetId,
+    String(x.sheetId),
+    x.range,
+    String(x.startRowIndex),
+    String(x.startColumnIndex),
+    x.logicalIdentity,
+    x.columns.join(","),
+  ].join("|");
 
 function stableObject(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableObject);
@@ -172,41 +195,50 @@ function allRootLocators(root: TargetRoot): SheetsLocator[] {
   ];
 }
 
-export const FROZEN_PRODUCTION_DENYLIST = Object.freeze({
-  spreadsheetIds: new Set([
-    "1Ckqy598EPE9CO3gejn2b0sLC3IC1_FcwScRFPE2JumM",
-    "12bKGkui-DrcFjW4k2stW2vp8o8uqILaBNl57qztqFKM",
-    "10aqM2xEzuCOCxvqzivNQJVCjl-trvrC12S5lXvzE9fY",
-    "1R3K-tcZLT-AXEClTWNt3djlVijSZNog-EYl_PS5Rkw8",
-    "1ROEy5RyJ7pWNyZYm8hmzssV3cbwnvPNGCG3qxMSTDco",
-    "1sO97-59J4m0FlO8AZOyVIq3qdKvkJQQaoSElksyyEXQ",
-    "1ba86fQs0YH5a07OHcVDmsAKpYA0z95P9vIBc1fUxGuw",
-    "1Ny77wFr1LvJMc3LhLixFUwbqGYC_GdHTnQj1F3jq8h4",
-    "1bfcfUsNtrfvGscstI3l9jIdYdAVg5nODpsLTTPQ3h5I",
-  ]),
-  fileIds: new Set([
-    "1vLsNv3YZK-dAJh7jln7KbGLfWzp2k3ec",
-    "1n1YPmM6V8j4VCeVHZo1e2AvKjoVz4KFjXlpqBPqRnx8",
-  ]),
-  logicalIdentities: new Set([
-    "CUT1_ARCHIVE_REPOSITORY_20260928_01",
-    "RS1_84f170ffef50fecc331de87458db2bee9aeebf1bdf7c4e079260c338d477d7e1",
-    "MSET1_2f76282f0cc13c1df38b414d0221bebcc7f739fcb749ac6d7012e438f42f1cbc",
-    "AB1_033cc2303356f400eb36344e87dec0a2a430749521a759afe167e2e2fce12367",
-    "US_JAPAN_FX_POLICY",
-    "ROLLING_WEDGE_INVESTMENT",
-    "6aaaa975a4e8819189c56bce4f1fbcaa",
-    "6aabae742b4c819197c722b6cc8d643b",
-    "6aa64baf51648191845f153791c2ec73",
-  ]),
-});
+function productionIdentityDenied(value: string): boolean {
+  const exactSets = [
+    FROZEN_PRODUCTION_DENYLIST.fileIds,
+    FROZEN_PRODUCTION_DENYLIST.datasetIds,
+    FROZEN_PRODUCTION_DENYLIST.taskIds,
+    FROZEN_PRODUCTION_DENYLIST.instanceIds,
+    FROZEN_PRODUCTION_DENYLIST.authorityIds,
+    FROZEN_PRODUCTION_DENYLIST.scheduleIds,
+  ];
+  if (exactSets.some((set) => set.has(value))) return true;
+  const tokens = value.split(/[:/@|]/g).filter(Boolean);
+  return tokens.some((token) => exactSets.some((set) => set.has(token)));
+}
+
+function locatorDenied(locator: SheetsLocator): boolean {
+  return (
+    FROZEN_PRODUCTION_DENYLIST.fileIds.has(locator.spreadsheetId) ||
+    productionIdentityDenied(locator.logicalIdentity)
+  );
+}
 
 function witnessBoundaryStop(root: TargetRoot): ExecutorStop | null {
   if (root.fixtureAuthority !== false) return { ok: false, stop: "INVALID_FIXTURE_AUTHORITY" };
+  if (
+    root.rootId !== MATERIALIZED_FIXTURE_ROOT_ID ||
+    root.fixtureSpreadsheetId !== MATERIALIZED_FIXTURE_SPREADSHEET_ID ||
+    root.productionDenylistId !== MATERIALIZED_FIXTURE_PRODUCTION_DENYLIST_ID
+  ) {
+    return { ok: false, stop: "FIXTURE_TARGET_NOT_ALLOWLISTED", detail: "fixture root identity mismatch" };
+  }
+  if (
+    productionIdentityDenied(root.rootId) ||
+    FROZEN_PRODUCTION_DENYLIST.fileIds.has(root.fixtureSpreadsheetId)
+  ) {
+    return { ok: false, stop: "PRODUCTION_TARGET_DENIED", detail: root.rootId };
+  }
+
   const allowed = new Set(root.mutationAllowlist.map(locatorKey));
   for (const locator of allRootLocators(root)) {
-    if (FROZEN_PRODUCTION_DENYLIST.spreadsheetIds.has(locator.spreadsheetId)) {
-      return { ok: false, stop: "PRODUCTION_TARGET_DENIED", detail: locator.spreadsheetId };
+    if (locator.spreadsheetId !== root.fixtureSpreadsheetId) {
+      return { ok: false, stop: "FIXTURE_TARGET_NOT_ALLOWLISTED", detail: locatorKey(locator) };
+    }
+    if (locatorDenied(locator)) {
+      return { ok: false, stop: "PRODUCTION_TARGET_DENIED", detail: locator.logicalIdentity };
     }
   }
   for (const locator of root.mutationAllowlist) {
@@ -311,10 +343,7 @@ export class ExecutorCore {
       if (input.mode === "WITNESS" && !targetAllowed(input.root, step.target)) {
         return { ok: false, stop: "FIXTURE_TARGET_NOT_ALLOWLISTED", detail: step.id };
       }
-      if (
-        input.mode === "WITNESS" &&
-        FROZEN_PRODUCTION_DENYLIST.spreadsheetIds.has(step.target.spreadsheetId)
-      ) {
+      if (input.mode === "WITNESS" && locatorDenied(step.target)) {
         return { ok: false, stop: "PRODUCTION_TARGET_DENIED", detail: step.id };
       }
 
@@ -365,28 +394,79 @@ export class ExecutorCore {
     };
   }
 
-  private async transitionSessionCapability(
+  async acknowledgeRelayPrepared(
     mode: ExecutorMode,
     sessionId: string,
     root: TargetRoot,
-    expectedState: string,
-    desiredState: string,
+    verifier: RelayFinalityVerifier,
   ): Promise<ExecutorResult> {
     if (mode === "WITNESS") {
       const boundary = witnessBoundaryStop(root);
       if (boundary) return boundary;
     }
+
+    let verified = false;
+    try {
+      verified = await verifier.verify("PREPARED", sessionId);
+    } catch {
+      verified = false;
+    }
+    if (!verified) return { ok: false, stop: "RELAY_FINALITY_NOT_PROVEN" };
+
+    const session = await readOrStop(this.provider, root.locators.sessionCapability);
+    if (isExecutorStop(session)) return session;
+    if (asString(session.Session_ID) !== sessionId) {
+      return { ok: false, stop: "SESSION_ID_MISMATCH" };
+    }
+    if (session.Capability_State !== "OPEN") {
+      return { ok: false, stop: "SESSION_MUTATION_CAPABILITY_CLOSED" };
+    }
+
+    return {
+      ok: true,
+      status: "RELAY_PREPARED_VERIFIED",
+      recoveredSteps: [],
+      mutatedSteps: [],
+      reconciledAmbiguousSteps: [],
+    };
+  }
+
+  async closeSessionAfterRelay(
+    mode: ExecutorMode,
+    sessionId: string,
+    root: TargetRoot,
+    verifier: RelayFinalityVerifier,
+  ): Promise<ExecutorResult> {
+    if (mode === "WITNESS") {
+      const boundary = witnessBoundaryStop(root);
+      if (boundary) return boundary;
+    }
+
+    let verified = false;
+    try {
+      verified = await verifier.verify("COMMITTED", sessionId);
+    } catch {
+      verified = false;
+    }
+    if (!verified) return { ok: false, stop: "RELAY_FINALITY_NOT_PROVEN" };
+
     const before = await readOrStop(this.provider, root.locators.sessionCapability);
     if (isExecutorStop(before)) return before;
     if (asString(before.Session_ID) !== sessionId) {
       return { ok: false, stop: "SESSION_ID_MISMATCH" };
     }
-    if (before.Capability_State !== expectedState) {
+    if (before.Capability_State !== "OPEN") {
       return { ok: false, stop: "SESSION_MUTATION_CAPABILITY_CLOSED" };
     }
 
-    const desired: ExactRecord = { Session_ID: sessionId, Capability_State: desiredState };
-    const result = await this.provider.mutateExact(root.locators.sessionCapability, desired);
+    const desired: ExactRecord = { Session_ID: sessionId, Capability_State: "CLOSED" };
+    let result: MutationResult;
+    try {
+      result = await this.provider.mutateExact(root.locators.sessionCapability, desired);
+    } catch {
+      result = { outcome: "AMBIGUOUS" };
+    }
+
     let after: ExactRecord;
     try {
       after = await this.provider.readExact(root.locators.sessionCapability);
@@ -402,59 +482,14 @@ export class ExecutorCore {
         stop: result.outcome === "AMBIGUOUS" ? "MUTATION_OUTCOME_AMBIGUOUS" : "POSTCONDITION_MISMATCH",
       };
     }
+
     return {
       ok: true,
-      status: desiredState === "CLOSED" ? "COMPLETE" : "RELAY_PREPARED_VERIFIED",
+      status: "COMPLETE",
       recoveredSteps: [],
-      mutatedSteps: [desiredState === "CLOSED" ? "SESSION_CAPABILITY_CLOSE" : "SESSION_RELAY_PREPARED_ACK"],
-      reconciledAmbiguousSteps: result.outcome === "AMBIGUOUS"
-        ? [desiredState === "CLOSED" ? "SESSION_CAPABILITY_CLOSE" : "SESSION_RELAY_PREPARED_ACK"]
-        : [],
+      mutatedSteps: ["SESSION_CAPABILITY_CLOSE"],
+      reconciledAmbiguousSteps: result.outcome === "AMBIGUOUS" ? ["SESSION_CAPABILITY_CLOSE"] : [],
     };
-  }
-
-  async acknowledgeRelayPrepared(
-    mode: ExecutorMode,
-    sessionId: string,
-    root: TargetRoot,
-    verifier: RelayFinalityVerifier,
-  ): Promise<ExecutorResult> {
-    let verified = false;
-    try {
-      verified = await verifier.verify("PREPARED", sessionId);
-    } catch {
-      verified = false;
-    }
-    if (!verified) return { ok: false, stop: "RELAY_FINALITY_NOT_PROVEN" };
-    return this.transitionSessionCapability(
-      mode,
-      sessionId,
-      root,
-      "OPEN",
-      "RELAY_PREPARED_VERIFIED",
-    );
-  }
-
-  async closeSessionAfterRelay(
-    mode: ExecutorMode,
-    sessionId: string,
-    root: TargetRoot,
-    verifier: RelayFinalityVerifier,
-  ): Promise<ExecutorResult> {
-    let verified = false;
-    try {
-      verified = await verifier.verify("COMMITTED", sessionId);
-    } catch {
-      verified = false;
-    }
-    if (!verified) return { ok: false, stop: "RELAY_FINALITY_NOT_PROVEN" };
-    return this.transitionSessionCapability(
-      mode,
-      sessionId,
-      root,
-      "RELAY_PREPARED_VERIFIED",
-      "CLOSED",
-    );
   }
 
 }
@@ -506,19 +541,41 @@ export class GoogleSheetsControlPlaneProvider implements ControlPlaneProvider {
     return record;
   }
 
+  private cellData(value: Scalar): { userEnteredValue: Record<string, unknown> } {
+    if (typeof value === "number") return { userEnteredValue: { numberValue: value } };
+    if (typeof value === "boolean") return { userEnteredValue: { boolValue: value } };
+    return { userEnteredValue: { stringValue: value === null ? "" : String(value) } };
+  }
+
   async mutateExact(locator: SheetsLocator, value: ExactRecord): Promise<MutationResult> {
-    const values = locator.columns.map((column) => value[column] ?? "");
+    const cells = locator.columns.map((column) => this.cellData(value[column] ?? null));
     const url =
       "https://sheets.googleapis.com/v4/spreadsheets/" +
       encodeURIComponent(locator.spreadsheetId) +
-      "/values/" +
-      encodeURIComponent(locator.range) +
-      "?valueInputOption=RAW";
+      ":batchUpdate";
+    const body = {
+      requests: [
+        {
+          updateCells: {
+            range: {
+              sheetId: locator.sheetId,
+              startRowIndex: locator.startRowIndex,
+              endRowIndex: locator.startRowIndex + 1,
+              startColumnIndex: locator.startColumnIndex,
+              endColumnIndex: locator.startColumnIndex + locator.columns.length,
+            },
+            rows: [{ values: cells }],
+            fields: "userEnteredValue",
+          },
+        },
+      ],
+    };
+
     try {
       const response = await this.fetchImpl(url, {
-        method: "PUT",
+        method: "POST",
         headers: this.headers(),
-        body: JSON.stringify({ majorDimension: "ROWS", values: [values] }),
+        body: JSON.stringify(body),
       });
       if (!response.ok) return { outcome: "AMBIGUOUS" };
       return { outcome: "CONFIRMED" };
@@ -547,7 +604,7 @@ export class FaultInjectingProvider implements ControlPlaneProvider {
     }
     if (
       spec.control !== "NONE" &&
-      FROZEN_PRODUCTION_DENYLIST.spreadsheetIds.has(spec.designatedLocator.spreadsheetId)
+      locatorDenied(spec.designatedLocator)
     ) {
       throw new Error("PRODUCTION_TARGET_DENIED");
     }
