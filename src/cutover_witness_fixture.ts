@@ -1,6 +1,7 @@
 export const MATERIALIZED_FIXTURE_ROOT_ID = "GFR1_7bd591adcefe2c5b178eeb49af142e4b4f25b4da83caba8b6d44546617c1f40e";
 export const MATERIALIZED_FIXTURE_SPREADSHEET_ID = "11DKed3wVcnryEQrgHzfR276znYJLRAwM14ZOEwCkS1Y";
 export const MATERIALIZED_FIXTURE_PRODUCTION_DENYLIST_ID = "PDL1_8709a31da33beea711c91b74fae6834a592cb7f2e786f93349269a83c8076018";
+export const MATERIALIZED_CASE8_FINALITY_SURFACE_ID = "GFRF1_c5d4e2b54d63d5e2f8c0b31f4fc652a15703702e52515d7b8d52cc0211f9bb33";
 
 export const MATERIALIZED_FIXTURE_LOCATORS = {
   authorityPublication: {
@@ -62,6 +63,16 @@ export const MATERIALIZED_FIXTURE_LOCATORS = {
     startColumnIndex: 0,
     logicalIdentity: "FIXTURE_REAL_PROVIDER_TARGET",
     columns: ["Target_ID", "Version", "State", "Last_Mutation_ID"],
+  },
+  relayFinality: {
+    provider: "GOOGLE_SHEETS_V4",
+    spreadsheetId: MATERIALIZED_FIXTURE_SPREADSHEET_ID,
+    sheetId: 1280685050,
+    range: "Relay_Finality!A2:D2",
+    startRowIndex: 1,
+    startColumnIndex: 0,
+    logicalIdentity: "FIXTURE_CASE8_RELAY_FINALITY",
+    columns: ["run_id", "agent_id", "session_id", "status"],
   },
 } as const;
 
@@ -212,5 +223,11 @@ export const MATERIALIZED_FIXTURE_INITIAL_STATE = Object.freeze({
     Version: "1",
     State: "BEFORE",
     Last_Mutation_ID: "NONE",
+  },
+  relayFinality: {
+    run_id: "CASE8_FINALITY_RESET",
+    agent_id: "CUTOVER_EXECUTOR",
+    session_id: "FIXTURE_SESSION_CONFORMANCE_001",
+    status: "RESET",
   },
 } as const);
