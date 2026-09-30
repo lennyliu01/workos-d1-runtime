@@ -1,0 +1,112 @@
+{
+  "status": "NON_AUTHORITATIVE_POST_PUBLICATION_WITNESS_REPAIR_CANDIDATE",
+  "agent": "CUTOVER_WITNESS_INFRA_IMPLEMENTER",
+  "mode": "POST_PUBLICATION_WITNESS_REPAIR",
+  "run_id": "CUTOVER_WITNESS_INFRA_POST_PUBLICATION_REPAIR_20260930_01",
+  "predecessor_run_id": "CUTOVER_EXECUTOR_WITNESS_20260930_01",
+  "publication_predecessor_run_id": "CUTOVER_WITNESS_INFRA_PUBLICATION_20260930_01",
+  "semantic_delta": "NONE",
+  "human_gate_reevaluation": "GOVERNANCE_DETERMINATION_REQUIRED",
+  "authoritative_basis": {
+    "data_archive_file_id": "1n1YPmM6V8j4VCeVHZo1e2AvKjoVz4KFjXlpqBPqRnx8",
+    "revision": "ANLCKQnVVo_A0bKw5-d20euYCumAHyWKf4iTtmuElesL5B9xXwjt9moQdHxdEGC4NcoH6wGxMM-MqcRoP_0bZM5AdkXJWIWyZSktXrQzSVA",
+    "section": "28.37.13",
+    "parent_accepted_main": "758062a270be080173d65b741bc80fefa0e785ca",
+    "accepted_witness_binding": "AB1_5c47281c3804ce7ebb7f43d606d91e6a4a2d06faa25d92c18a78bdd15394ddea"
+  },
+  "runtime_basis": {
+    "commit": "418d6c409059e596000a2c09511ceaf6ac1a79b7",
+    "blobs": {
+      "executor_core": "3d6e165c754a585e085e6eeb750e2edd37aac0ee",
+      "fixture_binding": "4ef34e564be2ccf992877a3495f581d0a44218b0",
+      "witness_invocation": "aae39b71d10e5920318dbaec43fc68abb7edd7c5",
+      "worker_entry": "ac433e9a101963a314a5276f2966b09c608fa09f"
+    },
+    "formal_invocation_entry": "POST /cutover/witness -> invokeCutoverWitness -> ExecutorCore",
+    "provider": "GoogleSheetsControlPlaneProvider",
+    "fault_wrapper": "FaultInjectingProvider",
+    "memory_provider_formal_path": false
+  },
+  "repair_set": {
+    "R1_FORMAL_EXECUTOR_INVOCATION_SURFACE_UNAVAILABLE": {
+      "status": "REPAIRED",
+      "evidence": "Authenticated existing runtime carrier route POST /cutover/witness invokes fixed FixtureRoot witness handler, same ExecutorCore, same GoogleSheetsControlPlaneProvider and accepted fault controls; no arbitrary caller locator."
+    },
+    "R2_CASE_7_PARTIAL_RECOVERY_PRECONDITION_CONFLICT": {
+      "status": "REPAIRED",
+      "evidence": "ExecutorCore distinguishes exact predecessor, contiguous same-transition desiredAfter prefix, and foreign/mismatched state. Completed prefix is readback-verified and not repeated; only remaining forward mutation executes."
+    },
+    "R3_CASE_8_REAL_RELAY_FINALITY_VERIFIER_UNBOUND": {
+      "status": "REPAIRED",
+      "evidence": "Independent non-authority Relay_Finality!A2:D2 is exact-addressable and deterministic-reset. Candidate formal path binds ExactRelayRowVerifier through GoogleSheetsControlPlaneProvider and closes session only after COMMITTED exact readback."
+    }
+  },
+  "fixture": {
+    "fixture_root_id": "GFR1_7bd591adcefe2c5b178eeb49af142e4b4f25b4da83caba8b6d44546617c1f40e",
+    "spreadsheet_id": "11DKed3wVcnryEQrgHzfR276znYJLRAwM14ZOEwCkS1Y",
+    "production_denylist_id": "PDL1_8709a31da33beea711c91b74fae6834a592cb7f2e786f93349269a83c8076018",
+    "case8_finality_surface_id": "GFRF1_c5d4e2b54d63d5e2f8c0b31f4fc652a15703702e52515d7b8d52cc0211f9bb33",
+    "case8_locator": "Relay_Finality!A2:D2",
+    "authority": false,
+    "agents_registered": false,
+    "production_authority_selectable": false
+  },
+  "owner_validation": {
+    "run_id": 36667658870,
+    "job_id": 109735715841,
+    "result": "PASS",
+    "all_eight_cases_executable_through_candidate_invocation": true,
+    "production_denylist_negative_addressing": "PASS_BEFORE_PROVIDER_CALL",
+    "governed_witness_executed": false
+  },
+  "real_provider_owner_conformance": {
+    "layer": "REAL_PROVIDER_CONFORMANCE_OWNER_CANDIDATE_ONLY",
+    "case7_evidence_id": "RPC2_876ebf449027572c78e74fc14fa1ab01f82ecc1be97baace54670de5f3a76eee",
+    "case8_evidence_id": "RPC2_dc26fc898190029377fc508f428dadbc8b54c05a95c76ee0933d4ce2907ce7ab",
+    "evidence_locator": "drive:11DKed3wVcnryEQrgHzfR276znYJLRAwM14ZOEwCkS1Y#PostPub_Provider_Conformance!A1:P3",
+    "case7": "real Google prefix target/11 exact readback; remaining protection mutation exact readback; no repeated authority mutation",
+    "case8": "real PREPARED exact readback; COMMITTED exact readback; session CLOSED exact readback; post-close transition mutation count 0",
+    "governed_witness": false
+  },
+  "successor_candidate_identity": {
+    "derivation": "K1B1",
+    "implementation_build_id": "IB1_02fbc9da958ff1a1064782a2262c7c4c0173085a7ec6f204acb1ad5a27fcd63c",
+    "mutation_adapter_fingerprint": "6b28258e9d478f4c2a3a9c605995b0fc9213f3e1e93fe19fce16eb60fdb43ebd",
+    "provider_config_id": "GSPC1_6a99cf8bf66b44a3e11b4a1536dad167745cd30ad2c89a4c229fff29a6c69352",
+    "provider_config_disposition": "MECHANICALLY_PROVEN_UNCHANGED",
+    "resource_scope_fingerprint": "4918f1009c2d4776956b5d18859ab50ae82626aa15e6d7a92eeb371d5d538e17",
+    "capability_matrix_version": "PCM6_CUTOVER_GOOGLE_734df3e510e850d8e5b470a7",
+    "acceptance_binding_id": "AB1_885cedf836775e6625bd212eec4ebb0aee793d4eab53bd95f6b41ce9a18d9dc7",
+    "binding_state": "CANDIDATE_PCV_PENDING",
+    "materialized_locator": "drive:11DKed3wVcnryEQrgHzfR276znYJLRAwM14ZOEwCkS1Y#PostPub_Candidate_Binding!A1:Q2"
+  },
+  "candidate_projection": {
+    "locator": "drive:11DKed3wVcnryEQrgHzfR276znYJLRAwM14ZOEwCkS1Y#PostPub_Runtime_Projection!A1:G7",
+    "state": "CANDIDATE",
+    "components": [
+      "CUTOVER_EXECUTOR_CORE",
+      "CUTOVER_WITNESS_FIXTURE_ROOT",
+      "CUTOVER_GOOGLE_CONTROL_PLANE_PROVIDER",
+      "CUTOVER_WITNESS_FORMAL_INVOCATION_SURFACE",
+      "CUTOVER_CASE8_RELAY_FINALITY_SURFACE",
+      "CUTOVER_POSTPUB_REAL_PROVIDER_CONFORMANCE"
+    ]
+  },
+  "must_preserve": {
+    "business_cutover": "CUT1_ARCHIVE_REPOSITORY_20260928_01",
+    "activation_epoch": 10,
+    "registry": "RS1_84f170ffef50fecc331de87458db2bee9aeebf1bdf7c4e079260c338d477d7e1",
+    "manifest_set": "MSET1_2f76282f0cc13c1df38b414d0221bebcc7f739fcb749ac6d7012e438f42f1cbc",
+    "gate": "ba3bb9599a034a764c9bdfd10a3dca79436fbae80960ace6a64e2786035909f8",
+    "workflow": "a5f6447dd54fa3b5c5cdcb6ffada335cfe28fd8b3dad85b77693f522aab3c53f",
+    "business_binding": "AB1_033cc2303356f400eb36344e87dec0a2a430749521a759afe167e2e2fce12367",
+    "accepted_witness_binding": "AB1_5c47281c3804ce7ebb7f43d606d91e6a4a2d06faa25d92c18a78bdd15394ddea"
+  },
+  "production_authority_mutated": false,
+  "accepted_binding_mutated": false,
+  "publication_executed": false,
+  "governed_witness_executed": false,
+  "migration_complete": false,
+  "pr_merged": false,
+  "final_candidate_commit": "RECORDED_AFTER_FREEZE_IN_RELAY_AND_NONAUTH_CANDIDATE_BINDING"
+}
