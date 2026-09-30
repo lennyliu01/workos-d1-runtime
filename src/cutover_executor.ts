@@ -234,11 +234,11 @@ function witnessBoundaryStop(root: TargetRoot): ExecutorStop | null {
 
   const allowed = new Set(root.mutationAllowlist.map(locatorKey));
   for (const locator of allRootLocators(root)) {
-    if (locator.spreadsheetId !== root.fixtureSpreadsheetId) {
-      return { ok: false, stop: "FIXTURE_TARGET_NOT_ALLOWLISTED", detail: locatorKey(locator) };
-    }
     if (locatorDenied(locator)) {
       return { ok: false, stop: "PRODUCTION_TARGET_DENIED", detail: locator.logicalIdentity };
+    }
+    if (locator.spreadsheetId !== root.fixtureSpreadsheetId) {
+      return { ok: false, stop: "FIXTURE_TARGET_NOT_ALLOWLISTED", detail: locatorKey(locator) };
     }
   }
   for (const locator of root.mutationAllowlist) {
@@ -300,12 +300,9 @@ export class ExecutorCore {
 
     const currentCutover = asString(authority.Current_Committed_Cutover_ID);
     const currentEpoch = parseInteger(authority.Current_Activation_Epoch);
-    if (
-      currentCutover !== input.expectedPredecessorCutoverId ||
-      currentEpoch !== input.expectedPredecessorEpoch
-    ) {
-      return { ok: false, stop: "PREDECESSOR_MISMATCH" };
-    }
+    const predecessorMatches =
+      currentCutover === input.expectedPredecessorCutoverId &&
+      currentEpoch === input.expectedPredecessorEpoch;
 
     let used: number[];
     try {
@@ -327,12 +324,74 @@ export class ExecutorCore {
       return { ok: false, stop: "ACTIVATION_OBJECT_DRIFT" };
     }
 
-    if (
-      protection.Cutover_State !== "AUTHORITY_PREPARED" ||
-      protection.Migration_Write_Fence_State !== "ACTIVE" ||
-      protection.Maintenance_State !== "BLOCKED"
-    ) {
-      return { ok: false, stop: "TRANSITION_PROTECTION_NOT_VALID" };
+    let sameTransitionPrefixLength = 0;
+    if (!predecessorMatches) {
+      const first = input.transitionPlan[0];
+      const expectedPredecessorRecord: ExactRecord = {
+        Current_Committed_Cutover_ID: input.expectedPredecessorCutoverId,
+        Current_Activation_Epoch: input.expectedPredecessorEpoch,
+      };
+      const expectedTargetRecord: ExactRecord = {
+        Current_Committed_Cutover_ID: asString(candidate.Cutover_ID),
+        Current_Activation_Epoch: input.targetEpoch,
+      };
+
+      if (
+        !first ||
+        locatorKey(first.target) !== locatorKey(input.root.locators.authorityPublication) ||
+        !exactEqual(first.expectedBefore, expectedPredecessorRecord) ||
+        !exactEqual(first.desiredAfter, expectedTargetRecord) ||
+        !exactEqual(authority, first.desiredAfter)
+      ) {
+        return { ok: false, stop: "PREDECESSOR_MISMATCH" };
+      }
+
+      let beforeStateSeen = false;
+      for (const step of input.transitionPlan) {
+        let observed: ExactRecord | ExecutorStop;
+        if (locatorKey(step.target) === locatorKey(input.root.locators.authorityPublication)) {
+          observed = authority;
+        } else if (locatorKey(step.target) === locatorKey(input.root.locators.protection)) {
+          observed = protection;
+        } else {
+          observed = await readOrStop(this.provider, step.target);
+        }
+        if (isExecutorStop(observed)) return observed;
+
+        if (exactEqual(observed, step.desiredAfter)) {
+          if (beforeStateSeen) {
+            return { ok: false, stop: "PREDECESSOR_MISMATCH", detail: "non-contiguous same-transition prefix" };
+          }
+          sameTransitionPrefixLength += 1;
+          continue;
+        }
+        if (exactEqual(observed, step.expectedBefore)) {
+          beforeStateSeen = true;
+          continue;
+        }
+        return { ok: false, stop: "PREDECESSOR_MISMATCH", detail: "foreign state is not same-transition prefix" };
+      }
+
+      if (sameTransitionPrefixLength < 1) {
+        return { ok: false, stop: "PREDECESSOR_MISMATCH" };
+      }
+    }
+
+    const protectionInitial =
+      protection.Cutover_State === "AUTHORITY_PREPARED" &&
+      protection.Migration_Write_Fence_State === "ACTIVE" &&
+      protection.Maintenance_State === "BLOCKED";
+    if (!protectionInitial) {
+      const protectionStepIndex = input.transitionPlan.findIndex(
+        (step) => locatorKey(step.target) === locatorKey(input.root.locators.protection),
+      );
+      const protectionRecovered =
+        protectionStepIndex >= 0 &&
+        sameTransitionPrefixLength > protectionStepIndex &&
+        exactEqual(protection, input.transitionPlan[protectionStepIndex].desiredAfter);
+      if (!protectionRecovered) {
+        return { ok: false, stop: "TRANSITION_PROTECTION_NOT_VALID" };
+      }
     }
 
     const recoveredSteps: string[] = [];
