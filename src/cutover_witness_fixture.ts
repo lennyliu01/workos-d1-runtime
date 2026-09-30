@@ -213,4 +213,4 @@ export const MATERIALIZED_FIXTURE_INITIAL_STATE = Object.freeze({
     State: "BEFORE",
     Last_Mutation_ID: "NONE",
   },
-} as const;
+} as const);
