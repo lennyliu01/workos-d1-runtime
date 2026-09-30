@@ -6,7 +6,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "test:cutover-owner": "tsx tests/cutover_executor_owner_validation.ts"
+    "test:cutover-owner": "tsx tests/cutover_executor_owner_validation.ts",
+    "test:cutover-postpub": "tsx tests/cutover_post_publication_repair_owner_validation.ts"
   },
   "devDependencies": {
     "tsx": "^4.20.0",
