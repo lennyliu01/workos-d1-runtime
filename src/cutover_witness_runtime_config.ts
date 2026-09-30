@@ -1,0 +1,35 @@
+import {
+  MATERIALIZED_FIXTURE_PRODUCTION_DENYLIST_ID,
+  MATERIALIZED_FIXTURE_ROOT_ID,
+  MATERIALIZED_FIXTURE_SPREADSHEET_ID,
+} from "./cutover_witness_fixture";
+
+export const CUTOVER_WITNESS_WORKER_SERVICE = "workos-cutover-witness";
+export const CUTOVER_WITNESS_WORKER_URL =
+  "https://workos-cutover-witness.lennyliu01.workers.dev";
+export const CUTOVER_WITNESS_FORMAL_ROUTE = "/cutover/witness";
+export const CUTOVER_WITNESS_READINESS_ROUTE = "/cutover/witness/readiness";
+export const CUTOVER_WITNESS_WRANGLER_CONFIG = "wrangler.cutover-witness.jsonc";
+
+export const CUTOVER_WITNESS_CALLER_AUTH_BINDING = "RUNTIME_SECRET";
+export const CUTOVER_WITNESS_GOOGLE_CREDENTIAL_BINDING =
+  "CUTOVER_WITNESS_GOOGLE_ACCESS_TOKEN";
+export const CUTOVER_WITNESS_PROVIDER_AUTH_MODE =
+  "GOOGLE_OAUTH_BEARER_ACCESS_TOKEN_EPHEMERAL";
+export const CUTOVER_WITNESS_CREDENTIAL_PROVISIONING_MECHANISM =
+  "GITHUB_ACTIONS_REPOSITORY_SECRET_TO_CLOUDFLARE_WORKER_SECRET_VIA_WRANGLER_SECRETS_FILE";
+
+export const CUTOVER_WITNESS_RUNTIME_SCOPE = Object.freeze({
+  fixtureRootId: MATERIALIZED_FIXTURE_ROOT_ID,
+  fixtureSpreadsheetId: MATERIALIZED_FIXTURE_SPREADSHEET_ID,
+  productionDenylistId: MATERIALIZED_FIXTURE_PRODUCTION_DENYLIST_ID,
+  workerService: CUTOVER_WITNESS_WORKER_SERVICE,
+  formalRoute: CUTOVER_WITNESS_FORMAL_ROUTE,
+  readinessRoute: CUTOVER_WITNESS_READINESS_ROUTE,
+  provider: "GoogleSheetsControlPlaneProvider",
+  providerPrimitiveRead: "spreadsheets.values.get/UNFORMATTED_VALUE",
+  providerPrimitiveMutate: "spreadsheets.batchUpdate/updateCells",
+  providerAuthMode: CUTOVER_WITNESS_PROVIDER_AUTH_MODE,
+  credentialBinding: CUTOVER_WITNESS_GOOGLE_CREDENTIAL_BINDING,
+  credentialProvisioning: CUTOVER_WITNESS_CREDENTIAL_PROVISIONING_MECHANISM,
+} as const);
