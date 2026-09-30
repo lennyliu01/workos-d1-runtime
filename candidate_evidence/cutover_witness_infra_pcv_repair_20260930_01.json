@@ -1,0 +1,130 @@
+{
+  "status": "NON_AUTHORITATIVE_PCV_REPAIR_CANDIDATE",
+  "mode": "PCV_REPAIR",
+  "predecessor_run_id": "PCV_CUTOVER_WITNESS_INFRA_20260930_01",
+  "semantic_candidate": {
+    "drive_id": "1Fx9H4_xJ1g6dr_E3D1rO0bLUajJ2DOErRiAsdrgztcA",
+    "revision_id": "ANLCKQlKEc3SdEIV92c1vHst-IRCr_ZWVmBr8nkdcyJfB6CJ98RtptAfRDthu_QkOyFtv2_rQrK7FGYgQjzEvebCK6iA7p1jWRT7nclz70A"
+  },
+  "accepted_parent_basis": "df54a572b03c9f6ca4aa118bacb3d41805c19cd5",
+  "runtime_basis": {
+    "commit": "8c3a2a890ac66376c3f7b27be9008ccb7d924a00",
+    "runtime_blobs": {
+      "executor": "d8168257f3ea524af49f5f35d0beef6ef713eaa4",
+      "fixture_binding": "7109b1bbfb002be28ae97c7d0ff9954b2373d2aa"
+    }
+  },
+  "fixture_root": {
+    "id": "GFR1_7bd591adcefe2c5b178eeb49af142e4b4f25b4da83caba8b6d44546617c1f40e",
+    "spreadsheet_id": "11DKed3wVcnryEQrgHzfR276znYJLRAwM14ZOEwCkS1Y",
+    "production_denylist_id": "PDL1_8709a31da33beea711c91b74fae6834a592cb7f2e786f93349269a83c8076018",
+    "fixture_authority": false,
+    "registered_in_agents": false,
+    "authority_selectable": false,
+    "deterministic_initialize": "GFR_INIT_V1",
+    "deterministic_reset": "GFR_RESET_V1",
+    "deterministic_cleanup": "GFR_CLEANUP_V1"
+  },
+  "repair": {
+    "R1": "IMPLEMENTED — PREPARED exact verification leaves session OPEN; only COMMITTED exact verification triggers OPEN->CLOSED; later same-session mutation denied.",
+    "R2": "IMPLEMENTED — exact materialized Google FixtureRoot + exact locator set + current production File/Dataset/Task/Instance/Authority/Schedule denylist + mechanical pre-provider guard.",
+    "R3": "CONFORMANCE_EVIDENCE_MATERIALIZED — real Google batchUpdate/updateCells + exact values.get readback; normal and ambiguous-after-commit, one provider transition call, no blind retry, no duplicate transition mutation.",
+    "R4": "CANDIDATE_IDENTITIES_AND_BINDING_MATERIALIZED — exact K1B1-derived build/adapter/provider/resource/capability/binding identities and candidate projection/capability rows."
+  },
+  "identity_derivation": {
+    "K1B1": "ASCII K1B1 + uint16be component_count + each NFC UTF-8 STRING_ID as 0x53 + uint32be byte_length + bytes",
+    "implementation_build": {
+      "id": "IB1_d9dba728082b7b349d15d8a0a56bad41129d769210d372d9424fd14747a4fb4d",
+      "namespace": "CWIR_BUILD_V1",
+      "components": [
+        "CWIR_BUILD_V1",
+        "lennyliu01/workos-d1-runtime",
+        "src/cutover_executor.ts@blob:d8168257f3ea524af49f5f35d0beef6ef713eaa4",
+        "src/cutover_witness_fixture.ts@blob:7109b1bbfb002be28ae97c7d0ff9954b2373d2aa"
+      ]
+    },
+    "mutation_adapter": {
+      "fingerprint": "a6992fdf573ed8dd86c0cc6b5d74043748cee1cb80a98e3f2e17a488ecc52d19",
+      "components": [
+        "CUTOVER_GOOGLE_MUTATION_ADAPTER_V1",
+        "src/cutover_executor.ts@blob:d8168257f3ea524af49f5f35d0beef6ef713eaa4",
+        "GOOGLE_SHEETS_V4",
+        "spreadsheets.batchUpdate/updateCells",
+        "spreadsheets.values.get/UNFORMATTED_VALUE",
+        "AMBIGUOUS=>EXACT_READBACK_NO_BLIND_RETRY",
+        "GFR1_7bd591adcefe2c5b178eeb49af142e4b4f25b4da83caba8b6d44546617c1f40e",
+        "PDL1_8709a31da33beea711c91b74fae6834a592cb7f2e786f93349269a83c8076018"
+      ]
+    },
+    "provider_config": {
+      "id": "GSPC1_6a99cf8bf66b44a3e11b4a1536dad167745cd30ad2c89a4c229fff29a6c69352",
+      "components": [
+        "GSPC1",
+        "GOOGLE_SHEETS_V4",
+        "READ=spreadsheets.values.get/UNFORMATTED_VALUE",
+        "MUTATE=spreadsheets.batchUpdate/updateCells/USER_ENTERED_VALUE",
+        "FINALITY=AMBIGUOUS_THEN_EXACT_REGISTERED_READBACK_NO_BLIND_RETRY",
+        "FAULT_BOUNDARY=AFTER_REAL_PROVIDER_OPERATION_WITNESS_ONLY"
+      ]
+    },
+    "resource_scope": {
+      "fingerprint": "e461d5a248cf1a5b9f6347540b3a76cb9a5b61bb4835b466ddedf48bfd0f5677",
+      "components": [
+        "CUTOVER_WITNESS_INFRA_RESOURCE_SCOPE_V1",
+        "1Fx9H4_xJ1g6dr_E3D1rO0bLUajJ2DOErRiAsdrgztcA",
+        "ANLCKQlKEc3SdEIV92c1vHst-IRCr_ZWVmBr8nkdcyJfB6CJ98RtptAfRDthu_QkOyFtv2_rQrK7FGYgQjzEvebCK6iA7p1jWRT7nclz70A",
+        "GFR1_7bd591adcefe2c5b178eeb49af142e4b4f25b4da83caba8b6d44546617c1f40e",
+        "11DKed3wVcnryEQrgHzfR276znYJLRAwM14ZOEwCkS1Y",
+        "PDL1_8709a31da33beea711c91b74fae6834a592cb7f2e786f93349269a83c8076018"
+      ]
+    },
+    "capability_matrix_version": "PCM5_CUTOVER_GOOGLE_a08f04a7e816d80d6fdedaf7",
+    "acceptance_binding": {
+      "id": "AB1_5c47281c3804ce7ebb7f43d606d91e6a4a2d06faa25d92c18a78bdd15394ddea",
+      "ordered_K1B1_components": [
+        "IB1_d9dba728082b7b349d15d8a0a56bad41129d769210d372d9424fd14747a4fb4d",
+        "a5f6447dd54fa3b5c5cdcb6ffada335cfe28fd8b3dad85b77693f522aab3c53f",
+        "ba3bb9599a034a764c9bdfd10a3dca79436fbae80960ace6a64e2786035909f8",
+        "a6992fdf573ed8dd86c0cc6b5d74043748cee1cb80a98e3f2e17a488ecc52d19",
+        "GSPC1_6a99cf8bf66b44a3e11b4a1536dad167745cd30ad2c89a4c229fff29a6c69352",
+        "RS1_84f170ffef50fecc331de87458db2bee9aeebf1bdf7c4e079260c338d477d7e1",
+        "84f170ffef50fecc331de87458db2bee9aeebf1bdf7c4e079260c338d477d7e1",
+        "MSET1_2f76282f0cc13c1df38b414d0221bebcc7f739fcb749ac6d7012e438f42f1cbc",
+        "f9ae8ed9716b5dd447bad5f9951baef2bfb3f29161120a8118280204a1290ca7",
+        "ROUTE_V1",
+        "SHARED_ARCHIVE_INFRASTRUCTURE",
+        "e461d5a248cf1a5b9f6347540b3a76cb9a5b61bb4835b466ddedf48bfd0f5677",
+        "PCM5_CUTOVER_GOOGLE_a08f04a7e816d80d6fdedaf7"
+      ]
+    }
+  },
+  "real_provider_conformance": {
+    "normal": "RPC1_c2df95f9599ee609b5ae4bdc971ad504062996ddaa46f5cf22d5facd441b0410",
+    "ambiguous_after_commit": "RPC1_43435eba26177a658fc1ec7b69db441da8ccf63f607a1e140c1c795661b0dac0",
+    "exact_locator": "drive:11DKed3wVcnryEQrgHzfR276znYJLRAwM14ZOEwCkS1Y#Provider_Conformance!A2:R3",
+    "governed_witness": false
+  },
+  "candidate_projection": {
+    "exact_locator": "drive:11DKed3wVcnryEQrgHzfR276znYJLRAwM14ZOEwCkS1Y#Runtime_Component_Projection_Candidate!A1:G5",
+    "records": [
+      "RCPC1_16cc8c85ff7fae3037d52c7aea96f7d7084f181cfa994660cbedfa43d496e99a",
+      "RCPC1_35007e1f4c969ab197866d6ac430158341bb0b5aecf0e23a801d9ad62fccfc51",
+      "RCPC1_784210023f44530d8dc3c4ccf6bb5f6db820450bfdbf1b6c6597d4b7f2e1de65",
+      "RCPC1_d65671915fb72c8dd5d43747bd8994c42a2900f35c11ddd5cb63da9c43c7ac83"
+    ]
+  },
+  "capability_records": {
+    "exact_locator": "drive:11DKed3wVcnryEQrgHzfR276znYJLRAwM14ZOEwCkS1Y#Capability_Records_Candidate!A1:K5",
+    "records": [
+      "PC1_7f9df9be025a83b44577bfb83cf52b80f7f2403c448bba6a3d09327ca4a04b3c",
+      "PC1_2c0b4f271242f0cac19463685cb56bc8ca868b0b9efaa13f197be197bcce0952",
+      "PC1_b5a239a79788d6f5f749360351794355f3c7f765b8010074424e2d15ffe283cf",
+      "PC1_8b1ed0ab864dee03d53373341d5e56d3987ad5580ff72cedf5677d1f7dd0faac"
+    ]
+  },
+  "current_accepted_binding_untouched": "AB1_033cc2303356f400eb36344e87dec0a2a430749521a759afe167e2e2fce12367",
+  "production_authority_mutated": false,
+  "governed_witness_executed": false,
+  "human_gate_executed": false,
+  "publication_executed": false
+}
