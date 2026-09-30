@@ -195,7 +195,7 @@ export const FROZEN_PRODUCTION_DENYLIST = Object.freeze({
 export const MATERIALIZED_FIXTURE_INITIAL_STATE = Object.freeze({
   authorityPublication: {
     Current_Committed_Cutover_ID: "CUT_FIXTURE_PREV",
-    Current_Activation_Epoch: "10",
+    Current_Activation_Epoch: 10,
   },
   candidateActivation: {
     Cutover_ID: "CUT_FIXTURE_TARGET",
