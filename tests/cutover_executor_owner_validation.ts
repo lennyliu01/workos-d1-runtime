@@ -4,11 +4,18 @@ import {
   ExecutorCore,
   ExecutorInput,
   FaultInjectingProvider,
+  GoogleSheetsControlPlaneProvider,
   MutationResult,
   SheetsLocator,
   TargetRoot,
   exactEqual,
 } from "../src/cutover_executor";
+import {
+  MATERIALIZED_FIXTURE_LOCATORS,
+  MATERIALIZED_FIXTURE_PRODUCTION_DENYLIST_ID,
+  MATERIALIZED_FIXTURE_ROOT_ID,
+  MATERIALIZED_FIXTURE_SPREADSHEET_ID,
+} from "../src/cutover_witness_fixture";
 
 class MemoryProvider implements ControlPlaneProvider {
   readonly state = new Map<string, ExactRecord>();
@@ -52,20 +59,18 @@ const cols = {
   session: ["Session_ID", "Capability_State"] as const,
 };
 
-function loc(id: string, range: string, columns: readonly string[]): SheetsLocator {
-  return { provider: "GOOGLE_SHEETS_V4", spreadsheetId: id, range, columns };
-}
-
-const fixtureId = "fixture-non-authority-20260930-01";
-const authority = loc(fixtureId, "Authority_Publication!A2:B2", cols.authority);
-const activation = loc(fixtureId, "Candidate_Activation!A2:G2", cols.activation);
-const protection = loc(fixtureId, "Protection!A2:C2", cols.protection);
-const epochs = loc(fixtureId, "Used_Epochs!A2:A2", cols.epochs);
-const session = loc(fixtureId, "Session_Capability!A2:B2", cols.session);
+const authority = MATERIALIZED_FIXTURE_LOCATORS.authorityPublication as SheetsLocator;
+const activation = MATERIALIZED_FIXTURE_LOCATORS.candidateActivation as SheetsLocator;
+const protection = MATERIALIZED_FIXTURE_LOCATORS.protection as SheetsLocator;
+const epochs = MATERIALIZED_FIXTURE_LOCATORS.usedEpochs as SheetsLocator;
+const session = MATERIALIZED_FIXTURE_LOCATORS.sessionCapability as SheetsLocator;
+const realProviderTarget = MATERIALIZED_FIXTURE_LOCATORS.realProviderTarget as SheetsLocator;
 
 const root: TargetRoot = {
-  rootId: "CUTOVER_WITNESS_FIXTURE_ROOT_V1",
+  rootId: MATERIALIZED_FIXTURE_ROOT_ID,
   fixtureAuthority: false,
+  fixtureSpreadsheetId: MATERIALIZED_FIXTURE_SPREADSHEET_ID,
+  productionDenylistId: MATERIALIZED_FIXTURE_PRODUCTION_DENYLIST_ID,
   locators: {
     authorityPublication: authority,
     candidateActivation: activation,
@@ -73,7 +78,7 @@ const root: TargetRoot = {
     usedEpochs: epochs,
     sessionCapability: session,
   },
-  mutationAllowlist: [authority, protection, session],
+  mutationAllowlist: [authority, protection, session, realProviderTarget],
 };
 
 const frozenActivation: ExactRecord = {
@@ -246,24 +251,30 @@ async function case8(): Promise<void> {
   const prepared = await core.acknowledgeRelayPrepared("WITNESS", "SESSION_001", root, verifier);
   assert(
     prepared.ok && prepared.status === "RELAY_PREPARED_VERIFIED",
-    "CASE_8 PREPARED readback was not mechanically persisted",
+    "CASE_8 PREPARED exact readback was not verified",
+  );
+  const afterPrepared = await p.readExact(session);
+  assert(
+    afterPrepared.Capability_State === "OPEN",
+    "CASE_8 PREPARED incorrectly closed mutation capability before COMMITTED",
   );
 
-  const deniedAfterPrepared = await core.execute(makeInput());
+  const prematureClose = await core.closeSessionAfterRelay("WITNESS", "SESSION_001", root, verifier);
   assert(
-    !deniedAfterPrepared.ok && deniedAfterPrepared.stop === "SESSION_MUTATION_CAPABILITY_CLOSED",
-    "CASE_8 mutation capability remained open after PREPARED readback",
+    !prematureClose.ok && prematureClose.stop === "RELAY_FINALITY_NOT_PROVEN",
+    "CASE_8 closed without COMMITTED exact readback",
   );
+  assert((await p.readExact(session)).Capability_State === "OPEN", "CASE_8 premature close changed session state");
 
   relayStatus = "COMMITTED";
   const close = await core.closeSessionAfterRelay("WITNESS", "SESSION_001", root, verifier);
-  assert(close.ok && close.status === "COMPLETE", "CASE_8 session close failed");
+  assert(close.ok && close.status === "COMPLETE", "CASE_8 session close failed after COMMITTED");
 
   const before = [...p.mutationCount.values()].reduce((a, b) => a + b, 0);
   const denied = await core.execute(makeInput());
   const after = [...p.mutationCount.values()].reduce((a, b) => a + b, 0);
   assert(!denied.ok && denied.stop === "SESSION_MUTATION_CAPABILITY_CLOSED", "CASE_8 closed session not denied");
-  assert(before === after, "CASE_8 mutation occurred after close");
+  assert(before === after, "CASE_8 mutation occurred after terminal close");
 }
 
 async function extraGuards(): Promise<void> {
@@ -281,7 +292,6 @@ async function extraGuards(): Promise<void> {
 
   const deniedRoot: TargetRoot = {
     ...root,
-    rootId: "DENIED",
     locators: {
       ...root.locators,
       authorityPublication: {
@@ -291,7 +301,23 @@ async function extraGuards(): Promise<void> {
     },
   };
   const result = await new ExecutorCore(p).execute({ ...makeInput(), root: deniedRoot });
-  assert(!result.ok && result.stop === "PRODUCTION_TARGET_DENIED", "production denylist not enforced");
+  assert(
+    !result.ok && (result.stop === "PRODUCTION_TARGET_DENIED" || result.stop === "FIXTURE_TARGET_NOT_ALLOWLISTED"),
+    "production File_ID denylist not enforced",
+  );
+
+  const logicalDeniedRoot: TargetRoot = {
+    ...root,
+    locators: {
+      ...root.locators,
+      authorityPublication: {
+        ...authority,
+        logicalIdentity: "RW_CURRENT_STATE:ENPLAS",
+      },
+    },
+  };
+  const logicalDenied = await new ExecutorCore(p).execute({ ...makeInput(), root: logicalDeniedRoot });
+  assert(!logicalDenied.ok && logicalDenied.stop === "PRODUCTION_TARGET_DENIED", "production Dataset/Instance denylist not enforced");
 
   const resetProvider = new MemoryProvider(); seed(resetProvider);
   const resetSnapshot = new Map<SheetsLocator, ExactRecord>([
@@ -309,6 +335,33 @@ async function extraGuards(): Promise<void> {
   const prodResult = await new ExecutorCore(prodProvider).execute({ ...makeInput(), mode: "PRODUCTION" });
   assert(prodResult.ok, "shared ExecutorCore production mode failed owner validation");
 
+  let capturedUrl = "";
+  let capturedMethod = "";
+  let capturedBody = "";
+  const fakeFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    capturedUrl = String(input);
+    capturedMethod = init?.method ?? "GET";
+    capturedBody = String(init?.body ?? "");
+    return new Response(JSON.stringify({ replies: [{}] }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  const google = new GoogleSheetsControlPlaneProvider({ accessToken: "owner-test", fetchImpl: fakeFetch as typeof fetch });
+  const providerResult = await google.mutateExact(realProviderTarget, {
+    Target_ID: "REAL_PROVIDER_TARGET",
+    Version: 2,
+    State: "AFTER_COMMIT",
+    Last_Mutation_ID: "OWNER_TEST_001",
+  });
+  assert(providerResult.outcome === "CONFIRMED", "Google provider batchUpdate contract did not confirm");
+  assert(capturedUrl.endsWith(":batchUpdate"), "Google provider did not use spreadsheets.batchUpdate");
+  assert(capturedMethod === "POST", "Google provider batchUpdate did not use POST");
+  const parsed = JSON.parse(capturedBody) as { requests?: Array<{ updateCells?: { range?: { sheetId?: number } } }> };
+  assert(
+    parsed.requests?.[0]?.updateCells?.range?.sheetId === realProviderTarget.sheetId,
+    "Google provider did not bind exact fixture sheetId",
+  );
+
+  assert(MATERIALIZED_FIXTURE_ROOT_ID.startsWith("GFR1_"), "fixture root identity missing");
+  assert(MATERIALIZED_FIXTURE_SPREADSHEET_ID === authority.spreadsheetId, "fixture locator set is not exact");
   assert(exactEqual({ b: 2, a: 1 }, { a: 1, b: 2 }), "exact equality canonical ordering failed");
 }
 
@@ -340,6 +393,9 @@ async function main(): Promise<void> {
       ambiguous_unresolved_stop: "PASS",
       production_fault_rejection: "PASS",
       production_denylist: "PASS",
+      materialized_fixture_binding: "PASS",
+      google_batch_update_contract: "PASS",
+      prepared_does_not_close_session: "PASS",
     },
   }, null, 2));
 }
