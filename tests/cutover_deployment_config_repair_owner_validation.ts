@@ -154,7 +154,7 @@ async function main(): Promise<void> {
     }),
     {
       ...configuredEnv,
-      CUTOVER_WITNESS_TOKEN_ISSUED_AT: iso(now - 1_800_000),
+      CUTOVER_WITNESS_TOKEN_ISSUED_AT: iso(now - 1_000_000),
       CUTOVER_WITNESS_TOKEN_EXPIRES_AT: iso(now + 299_000),
     },
   );
