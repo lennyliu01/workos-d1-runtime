@@ -170,7 +170,8 @@ function k1b1(parts: readonly string[]): Uint8Array {
 }
 
 async function ksha(parts: readonly string[]): Promise<string> {
-  const framed = k1b1(parts);\n  const digest = await crypto.subtle.digest("SHA-256", framed.buffer as ArrayBuffer);
+  const framed = k1b1(parts);
+  const digest = await crypto.subtle.digest("SHA-256", framed.buffer as ArrayBuffer);
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
