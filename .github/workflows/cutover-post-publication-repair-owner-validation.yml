@@ -16,7 +16,9 @@ on:
       - "tests/cutover_post_publication_candidate_binding_validation.ts"
       - "tests/cutover_deployment_config_repair_owner_validation.ts"
       - "tests/cutover_deployment_config_candidate_binding_validation.ts"
+      - "tests/cutover_wif_contract_validation.ts"
       - "candidate_evidence/cutover_witness_post_publication_repair_20260930_01.json"
+      - "candidate_evidence/cutover_witness_deployment_config_repair_20260930_01.json"
       - "package.json"
       - ".github/workflows/cutover-post-publication-repair-owner-validation.yml"
   workflow_dispatch:
@@ -42,5 +44,5 @@ jobs:
         run: npm run test:cutover-postpub
       - name: Deployment/config publication-readiness owner validation
         run: npm run test:cutover-deployment-config
-      - name: Deployment/config successor identity validation
-        run: npx tsx tests/cutover_deployment_config_candidate_binding_validation.ts
+      - name: WIF/GCL1/provenance/fencing validation
+        run: npm run test:cutover-wif

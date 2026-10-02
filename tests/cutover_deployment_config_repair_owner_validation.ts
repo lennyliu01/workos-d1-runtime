@@ -1,9 +1,14 @@
 import worker from "../src/cutover_witness_worker";
 import {
+  CUTOVER_WITNESS_CREDENTIAL_LIFECYCLE_ID,
   CUTOVER_WITNESS_FORMAL_ROUTE,
+  CUTOVER_WITNESS_GOOGLE_AUTH_ACTION_SHA,
   CUTOVER_WITNESS_GOOGLE_CREDENTIAL_BINDING,
+  CUTOVER_WITNESS_GOOGLE_SCOPE,
   CUTOVER_WITNESS_PROVIDER_AUTH_MODE,
   CUTOVER_WITNESS_READINESS_ROUTE,
+  CUTOVER_WITNESS_SERVICE_PRINCIPAL,
+  CUTOVER_WITNESS_WIF_PROVIDER_FULL_NAME,
   CUTOVER_WITNESS_WORKER_SERVICE,
   CUTOVER_WITNESS_WORKER_URL,
 } from "../src/cutover_witness_runtime_config";
@@ -54,11 +59,26 @@ class FakeGoogleApi {
   };
 }
 
+function iso(ms: number): string {
+  return new Date(ms).toISOString();
+}
+
+const now = Date.now();
 const configuredEnv = {
   RUNTIME_SECRET: "owner-runtime-secret",
-  CUTOVER_WITNESS_GOOGLE_ACCESS_TOKEN: "owner-ephemeral-google-token",
-  CUTOVER_WITNESS_BUILD_COMMIT: "OWNER_CANDIDATE_BUILD",
-  CUTOVER_WITNESS_PROVIDER_CONFIG_ID: "GSPC_OWNER_CANDIDATE",
+  CUTOVER_WITNESS_GOOGLE_ACCESS_TOKEN: "owner-short-lived-google-token",
+  CUTOVER_WITNESS_BUILD_COMMIT: "OWNER_ACCEPTED_MAIN_BUILD",
+  CUTOVER_WITNESS_PROVIDER_CONFIG_ID: "GSPC3_OWNER_CANDIDATE",
+  CUTOVER_WITNESS_ACCEPTANCE_BINDING_ID: "AB1_OWNER_CANDIDATE",
+  CUTOVER_WITNESS_CREDENTIAL_LIFECYCLE_ID,
+  CUTOVER_WITNESS_APPROVED_CANDIDATE_COMMIT: "OWNER_APPROVED_CANDIDATE",
+  CUTOVER_WITNESS_WORKFLOW_BLOB: "OWNER_WORKFLOW_BLOB",
+  CUTOVER_WITNESS_GOOGLE_AUTH_ACTION_SHA,
+  CUTOVER_WITNESS_TOKEN_ISSUED_AT: iso(now - 60_000),
+  CUTOVER_WITNESS_TOKEN_EXPIRES_AT: iso(now + 1_500_000),
+  CUTOVER_WITNESS_GOOGLE_SCOPE,
+  CUTOVER_WITNESS_WIF_PROVIDER: CUTOVER_WITNESS_WIF_PROVIDER_FULL_NAME,
+  CUTOVER_WITNESS_SERVICE_PRINCIPAL,
 };
 
 async function withFakeGoogle<T>(fn: (api: FakeGoogleApi) => Promise<T>): Promise<T> {
@@ -112,6 +132,39 @@ async function main(): Promise<void> {
     "missing Google binding returned wrong error",
   );
 
+  const lifecycleMismatch = await worker.fetch(
+    new Request(CUTOVER_WITNESS_WORKER_URL + CUTOVER_WITNESS_READINESS_ROUTE, {
+      headers: { Authorization: "Bearer owner-runtime-secret" },
+    }),
+    {
+      ...configuredEnv,
+      CUTOVER_WITNESS_CREDENTIAL_LIFECYCLE_ID: "GCL1_STALE",
+    },
+  );
+  assert(lifecycleMismatch.status === 503, "lifecycle mismatch did not fail closed");
+  assert(
+    (await lifecycleMismatch.json() as { error?: string }).error ===
+      "CUTOVER_WITNESS_CREDENTIAL_LIFECYCLE_MISMATCH",
+    "lifecycle mismatch returned wrong error",
+  );
+
+  const stale = await worker.fetch(
+    new Request(CUTOVER_WITNESS_WORKER_URL + CUTOVER_WITNESS_READINESS_ROUTE, {
+      headers: { Authorization: "Bearer owner-runtime-secret" },
+    }),
+    {
+      ...configuredEnv,
+      CUTOVER_WITNESS_TOKEN_ISSUED_AT: iso(now - 1_800_000),
+      CUTOVER_WITNESS_TOKEN_EXPIRES_AT: iso(now + 299_000),
+    },
+  );
+  assert(stale.status === 503, "stale credential did not fail closed");
+  assert(
+    (await stale.json() as { error?: string }).error ===
+      "CUTOVER_WITNESS_CREDENTIAL_NOT_FRESH",
+    "stale credential returned wrong error",
+  );
+
   await withFakeGoogle(async (api) => {
     const readiness = await worker.fetch(
       new Request(CUTOVER_WITNESS_WORKER_URL + CUTOVER_WITNESS_READINESS_ROUTE, {
@@ -122,13 +175,22 @@ async function main(): Promise<void> {
     assert(readiness.status === 200, "configured provider readiness failed");
     const body = await readiness.json() as Record<string, any>;
     assert(body.status === "READY", "readiness status mismatch");
-    assert(body.build_commit === "OWNER_CANDIDATE_BUILD", "build readback mismatch");
-    assert(body.provider_config_id === "GSPC_OWNER_CANDIDATE", "provider config readback mismatch");
+    assert(body.build_commit === "OWNER_ACCEPTED_MAIN_BUILD", "build readback mismatch");
+    assert(body.approved_candidate_commit === "OWNER_APPROVED_CANDIDATE", "candidate readback mismatch");
+    assert(body.workflow_blob === "OWNER_WORKFLOW_BLOB", "workflow readback mismatch");
+    assert(body.provider_config_id === "GSPC3_OWNER_CANDIDATE", "provider config readback mismatch");
+    assert(body.acceptance_binding_id === "AB1_OWNER_CANDIDATE", "binding readback mismatch");
+    assert(body.credential_lifecycle_id === CUTOVER_WITNESS_CREDENTIAL_LIFECYCLE_ID, "GCL1 mismatch");
+    assert(body.google_auth_action_sha === CUTOVER_WITNESS_GOOGLE_AUTH_ACTION_SHA, "auth action mismatch");
+    assert(body.wif_provider === CUTOVER_WITNESS_WIF_PROVIDER_FULL_NAME, "WIF provider mismatch");
+    assert(body.service_principal === CUTOVER_WITNESS_SERVICE_PRINCIPAL, "service principal mismatch");
+    assert(body.google_scope === CUTOVER_WITNESS_GOOGLE_SCOPE, "scope mismatch");
+    assert(body.credential_freshness === "PASS", "freshness mismatch");
     assert(body.provider_readiness.exact_readback === true, "real provider exact readback absent");
     assert(body.provider_readiness.fixture_root_id === MATERIALIZED_FIXTURE_ROOT_ID, "fixture root mismatch");
     assert(body.credential_value_disclosed === false, "secret disclosure flag violated");
     assert(
-      JSON.stringify(body).includes("owner-ephemeral-google-token") === false,
+      JSON.stringify(body).includes("owner-short-lived-google-token") === false,
       "Google credential leaked into readiness response",
     );
     assert(api.calls.length === 1, "readiness used unexpected provider call count");
@@ -185,9 +247,15 @@ async function main(): Promise<void> {
     readiness_route: CUTOVER_WITNESS_READINESS_ROUTE,
     provider_auth_mode: CUTOVER_WITNESS_PROVIDER_AUTH_MODE,
     credential_binding: CUTOVER_WITNESS_GOOGLE_CREDENTIAL_BINDING,
+    credential_lifecycle_id: CUTOVER_WITNESS_CREDENTIAL_LIFECYCLE_ID,
+    wif_provider: CUTOVER_WITNESS_WIF_PROVIDER_FULL_NAME,
+    service_principal: CUTOVER_WITNESS_SERVICE_PRINCIPAL,
+    google_scope: CUTOVER_WITNESS_GOOGLE_SCOPE,
     credential_secret_disclosed: false,
     real_provider_readiness_fixture_only: "PASS",
     missing_credential_fail_closed: "PASS",
+    stale_credential_fail_closed: "PASS",
+    lifecycle_mismatch_fail_closed: "PASS",
     production_denylist_pre_provider: "PASS",
     governed_witness_executed: false,
   }, null, 2));
