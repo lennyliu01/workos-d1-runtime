@@ -101,8 +101,8 @@ async function main(): Promise<void> {
   contains("CUTOVER_WITNESS_WIF_PROVIDER_ADMISSION_READBACK_B64", "authorized WIF readback evidence input");
   contains("WIF_PROVIDER_EXACT_READBACK=PASS", "WIF exact readback gate");
   contains("WIF_TRUST_SCHEMA_UNCHANGED=PASS", "WIF trust-schema gate");
-  contains('"accepted_main_admission_mode": "EXACT_ACCEPTED_MAIN_ONLY"', "final GSPC3 admission mode");
-  contains('"accepted_main_sha": accepted_main_sha', "final GSPC3 explicit accepted-main SHA");
+  contains('payload.get("accepted_main_admission_mode") != "EXACT_ACCEPTED_MAIN_ONLY"', "final GSPC3 admission mode");
+  contains('payload["accepted_main_sha"] = accepted_main_sha', "final GSPC3 explicit accepted-main SHA");
   contains('"wif_provider_admitted_sha"', "DRE1 WIF admitted SHA binding");
   contains('"wif_provider_admission_readback_fingerprint"', "DRE1 WIF readback fingerprint binding");
   contains("EXACT_POST_MERGE_PROVIDER_ADMISSION_AND_DRE1_FENCE", "exact activation fence");
