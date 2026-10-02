@@ -7,6 +7,7 @@ on:
       - "src/cutover_witness_fixture.ts"
       - "src/cutover_witness_invocation.ts"
       - "src/cutover_witness_runtime_config.ts"
+      - "src/cutover_witness_provider_config_sequencing.ts"
       - "src/cutover_witness_worker.ts"
       - "src/index.ts"
       - "wrangler.cutover-witness.jsonc"
@@ -17,6 +18,7 @@ on:
       - "tests/cutover_deployment_config_repair_owner_validation.ts"
       - "tests/cutover_deployment_config_candidate_binding_validation.ts"
       - "tests/cutover_wif_contract_validation.ts"
+      - "tests/cutover_provider_config_sequencing_validation.ts"
       - "candidate_evidence/cutover_witness_post_publication_repair_20260930_01.json"
       - "candidate_evidence/cutover_witness_deployment_config_repair_20260930_01.json"
       - "package.json"
@@ -44,5 +46,5 @@ jobs:
         run: npm run test:cutover-postpub
       - name: Deployment/config publication-readiness owner validation
         run: npm run test:cutover-deployment-config
-      - name: WIF/GCL1/provenance/fencing validation
+      - name: WIF/GCL1/provenance/provider-admission sequencing/fencing validation
         run: npm run test:cutover-wif
