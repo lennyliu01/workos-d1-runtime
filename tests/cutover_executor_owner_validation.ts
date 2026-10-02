@@ -213,26 +213,22 @@ async function case6(): Promise<void> {
 async function case7(): Promise<void> {
   const p = new MemoryProvider(); seed(p);
   p.seed(authority, {
-    Current_Committed_Cutover_ID: "CUT_FIXTURE_PREV",
-    Current_Activation_Epoch: 10,
+    Current_Committed_Cutover_ID: "CUT_FIXTURE_TARGET",
+    Current_Activation_Epoch: 11,
   });
-  const input = makeInput();
-  const originalRead = p.readExact.bind(p);
-  let firstTransitionRead = true;
-  p.readExact = async (locator: SheetsLocator): Promise<ExactRecord> => {
-    if (p.key(locator) === p.key(authority) && !firstTransitionRead) {
-      return {
-        Current_Committed_Cutover_ID: "CUT_FIXTURE_TARGET",
-        Current_Activation_Epoch: 11,
-      };
-    }
-    const result = await originalRead(locator);
-    if (p.key(locator) === p.key(authority)) firstTransitionRead = false;
-    return result;
-  };
-  const result = await new ExecutorCore(p).execute(input);
-  assert(result.ok && result.recoveredSteps.includes("AUTHORITY_PUBLICATION"), "CASE_7 partial recovery not recognized");
+  const result = await new ExecutorCore(p).execute(makeInput());
+  assert(result.ok && result.recoveredSteps.includes("AUTHORITY_PUBLICATION"), "CASE_7 exact forward prefix not recognized");
   assert((p.mutationCount.get(p.key(authority)) ?? 0) === 0, "CASE_7 repeated completed prefix mutation");
+  assert((p.mutationCount.get(p.key(protection)) ?? 0) === 1, "CASE_7 remaining forward mutation not executed exactly once");
+
+  const foreign = new MemoryProvider(); seed(foreign);
+  foreign.seed(authority, {
+    Current_Committed_Cutover_ID: "FOREIGN_SUCCESSOR",
+    Current_Activation_Epoch: 11,
+  });
+  const foreignResult = await new ExecutorCore(foreign).execute(makeInput());
+  assert(!foreignResult.ok && foreignResult.stop === "PREDECESSOR_MISMATCH", "CASE_7 foreign successor treated as recovery");
+  assert([...foreign.mutationCount.values()].reduce((a, b) => a + b, 0) === 0, "CASE_7 foreign successor mutated");
 }
 
 async function case8(): Promise<void> {
@@ -302,7 +298,7 @@ async function extraGuards(): Promise<void> {
   };
   const result = await new ExecutorCore(p).execute({ ...makeInput(), root: deniedRoot });
   assert(
-    !result.ok && (result.stop === "PRODUCTION_TARGET_DENIED" || result.stop === "FIXTURE_TARGET_NOT_ALLOWLISTED"),
+    !result.ok && result.stop === "PRODUCTION_TARGET_DENIED",
     "production File_ID denylist not enforced",
   );
 

@@ -6,7 +6,11 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "test:cutover-owner": "tsx tests/cutover_executor_owner_validation.ts"
+    "test:cutover-owner": "tsx tests/cutover_executor_owner_validation.ts",
+    "test:cutover-postpub": "tsx tests/cutover_post_publication_repair_owner_validation.ts",
+    "test:cutover-deployment-config": "tsx tests/cutover_deployment_config_repair_owner_validation.ts",
+    "test:cutover-wif": "tsx tests/cutover_wif_contract_validation.ts && tsx tests/cutover_deployment_config_candidate_binding_validation.ts && tsx tests/cutover_provider_config_sequencing_validation.ts",
+    "test:cutover-sequencing": "tsx tests/cutover_provider_config_sequencing_validation.ts"
   },
   "devDependencies": {
     "tsx": "^4.20.0",

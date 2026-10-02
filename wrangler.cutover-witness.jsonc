@@ -1,0 +1,7 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "workos-cutover-witness",
+  "main": "src/cutover_witness_worker.ts",
+  "compatibility_date": "2026-09-22",
+  "workers_dev": true
+}

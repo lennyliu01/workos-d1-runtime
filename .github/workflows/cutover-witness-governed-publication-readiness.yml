@@ -1,0 +1,526 @@
+name: CUTOVER Witness Governed Publication Readiness
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy-readiness:
+    if: ${{ github.ref == 'refs/heads/main' && github.workflow_sha == github.sha }}
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      RUNTIME_SECRET: ${{ secrets.RUNTIME_SECRET }}
+      WORKER_URL: https://workos-cutover-witness.lennyliu01.workers.dev
+      WIF_PROVIDER: projects/959429469584/locations/global/workloadIdentityPools/workos-cutover-witness/providers/github-workos-d1-runtime
+      WIF_AUDIENCE: projects/959429469584/locations/global/workloadIdentityPools/workos-cutover-witness/providers/github-workos-d1-runtime
+      SERVICE_PRINCIPAL: workos-cutover-witness@workos-control-plane.iam.gserviceaccount.com
+      GOOGLE_SCOPE: https://www.googleapis.com/auth/spreadsheets
+      CREDENTIAL_LIFECYCLE_ID: GCL1_538d093018ca96dfcc7cccf5a0f772e5f1f2009eec8d02f277e9105661baa396
+      GOOGLE_AUTH_ACTION_SHA: 7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+      CANDIDATE_EVIDENCE_PATH: candidate_evidence/cutover_witness_deployment_config_repair_20260930_01.json
+      WORKFLOW_PATH: .github/workflows/cutover-witness-governed-publication-readiness.yml
+    steps:
+      - name: Check out exact accepted main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove exact governed merge provenance without free-form SHA input
+        id: provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
+
+          read -r -a PARENTS <<<"$(git show -s --format='%P' HEAD)"
+          test "${#PARENTS[@]}" -eq 2
+          BASE_PARENT="${PARENTS[0]}"
+          APPROVED_CANDIDATE_COMMIT="${PARENTS[1]}"
+
+          EXPECTED_BASE="$(jq -er '.accepted_main_basis' "$CANDIDATE_EVIDENCE_PATH")"
+          EVIDENCE_GCL1="$(jq -er '.credential_lifecycle.credential_lifecycle_id' "$CANDIDATE_EVIDENCE_PATH")"
+          EXPECTED_WORKFLOW_BLOB="$(jq -er '.worker_deployment.workflow_blob' "$CANDIDATE_EVIDENCE_PATH")"
+
+          test "$BASE_PARENT" = "$EXPECTED_BASE"
+          test "$EVIDENCE_GCL1" = "$CREDENTIAL_LIFECYCLE_ID"
+          test "$(jq -er '.provider_config.provider_config_sequencing_version' "$CANDIDATE_EVIDENCE_PATH")" = "GSPC3_ADMITTED_SHA_SEQ_V1"
+          test "$(jq -er '.provider_config.accepted_main_admission_mode' "$CANDIDATE_EVIDENCE_PATH")" = "EXACT_ACCEPTED_MAIN_ONLY"
+          test "$(jq -er '.provider_config.accepted_main_sha_binding' "$CANDIDATE_EVIDENCE_PATH")" = "POST_MERGE_EXACT_ACCEPTED_MAIN_SHA_REQUIRED"
+          test "$(jq -er '.successor_identities.provider_config_id' "$CANDIDATE_EVIDENCE_PATH")" = "NOT_MATERIALIZED_PRE_MERGE"
+          test "$(jq -er '.successor_identities.capability_matrix_version' "$CANDIDATE_EVIDENCE_PATH")" = "NOT_MATERIALIZED_PRE_FINAL_PROVIDER_CONFIG"
+          test "$(jq -er '.successor_identities.acceptance_binding_id' "$CANDIDATE_EVIDENCE_PATH")" = "NOT_MATERIALIZED_PRE_FINAL_PROVIDER_CONFIG"
+          test "$(jq -er '.deployment_readiness.actual_dre1' "$CANDIDATE_EVIDENCE_PATH")" = "NOT_MATERIALIZED_PRE_DEPLOYMENT_READINESS"
+
+          git cat-file -e "$APPROVED_CANDIDATE_COMMIT^{commit}"
+          git diff --exit-code "$APPROVED_CANDIDATE_COMMIT" "$GITHUB_SHA"
+
+          WORKFLOW_BLOB="$(git rev-parse "$GITHUB_SHA:$WORKFLOW_PATH")"
+          test "$WORKFLOW_BLOB" = "$EXPECTED_WORKFLOW_BLOB"
+
+          {
+            echo "approved_base_main=$BASE_PARENT"
+            echo "approved_candidate_commit=$APPROVED_CANDIDATE_COMMIT"
+            echo "accepted_main_sha=$GITHUB_SHA"
+            echo "workflow_blob=$WORKFLOW_BLOB"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "ACCEPTED_MAIN_SHA_SOURCE=FRESH_READ_REFS_HEADS_MAIN_AFTER_GOVERNED_MERGE"
+          echo "APPROVED_BASE_FIRST_PARENT=PASS"
+          echo "APPROVED_CANDIDATE_SECOND_PARENT=PASS"
+          echo "PREMERGE_FINAL_IDENTITY_CLAIMS=ABSENT"
+          echo "WORKFLOW_SELF_INTEGRITY=PASS"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+
+      - name: Validate exact accepted build
+        run: |
+          set -euo pipefail
+          npm install
+          npm run typecheck
+          npm run test:cutover-owner
+          npm run test:cutover-postpub
+          npm run test:cutover-deployment-config
+          npm run test:cutover-wif
+
+      - name: Validate authorized WIF admission readback and materialize final identity chain
+        id: materialize
+        shell: bash
+        env:
+          WIF_PROVIDER_ADMISSION_READBACK_B64: ${{ vars.CUTOVER_WITNESS_WIF_PROVIDER_ADMISSION_READBACK_B64 }}
+          APPROVED_BASE_MAIN: ${{ steps.provenance.outputs.approved_base_main }}
+          APPROVED_CANDIDATE_COMMIT: ${{ steps.provenance.outputs.approved_candidate_commit }}
+          WORKFLOW_BLOB: ${{ steps.provenance.outputs.workflow_blob }}
+        run: |
+          set -euo pipefail
+          test -n "$WIF_PROVIDER_ADMISSION_READBACK_B64"
+          READBACK_FILE="$(mktemp)"
+          trap 'rm -f "$READBACK_FILE"' EXIT
+          printf '%s' "$WIF_PROVIDER_ADMISSION_READBACK_B64" | base64 --decode > "$READBACK_FILE"
+
+          python3 - "$READBACK_FILE" <<'PY'
+          import hashlib, json, os, struct, sys
+
+          evidence = json.load(open(os.environ["CANDIDATE_EVIDENCE_PATH"], encoding="utf-8"))
+          readback = json.load(open(sys.argv[1], encoding="utf-8"))
+          accepted_main_sha = os.environ["GITHUB_SHA"]
+          approved_base = os.environ["APPROVED_BASE_MAIN"]
+          approved_candidate = os.environ["APPROVED_CANDIDATE_COMMIT"]
+          workflow_blob = os.environ["WORKFLOW_BLOB"]
+
+          def fail(msg):
+              raise SystemExit(msg)
+
+          def sha40(value, label):
+              if not isinstance(value, str) or len(value) != 40 or any(c not in "0123456789abcdef" for c in value):
+                  fail(label + "_MUST_BE_EXACT_40_HEX_SHA")
+
+          def canonical(value):
+              return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+          def ksha(parts):
+              framed = b"K1B1" + struct.pack(">H", len(parts))
+              for raw in parts:
+                  data = raw.encode("utf-8")
+                  framed += b"S" + struct.pack(">I", len(data)) + data
+              return hashlib.sha256(framed).hexdigest()
+
+          sha40(accepted_main_sha, "ACCEPTED_MAIN_SHA")
+          sha40(approved_base, "APPROVED_BASE_MAIN")
+          sha40(approved_candidate, "APPROVED_CANDIDATE_COMMIT")
+          sha40(workflow_blob, "WORKFLOW_BLOB")
+
+          expected_mapping = {
+              "google.subject": "assertion.sub",
+              "attribute.repository_id": "assertion.repository_id",
+              "attribute.repository_owner_id": "assertion.repository_owner_id",
+              "attribute.workflow_ref": "assertion.workflow_ref",
+              "attribute.ref": "assertion.ref",
+              "attribute.sha": "assertion.sha",
+              "attribute.workflow_sha": "assertion.workflow_sha",
+              "attribute.event_name": "assertion.event_name",
+          }
+          expected_condition = (
+              "assertion.repository_id=='1380735463' && "
+              "assertion.repository_owner_id=='64623756' && "
+              "assertion.repository=='lennyliu01/workos-d1-runtime' && "
+              "assertion.ref=='refs/heads/main' && "
+              "assertion.workflow_ref=='lennyliu01/workos-d1-runtime/.github/workflows/cutover-witness-governed-publication-readiness.yml@refs/heads/main' && "
+              "assertion.event_name=='workflow_dispatch' && "
+              "assertion.workflow_sha==assertion.sha && "
+              "assertion.sha=='" + accepted_main_sha + "'"
+          )
+          exact = {
+              "provider_full_name": os.environ["WIF_PROVIDER"],
+              "state": "ACTIVE",
+              "issuer": "https://token.actions.githubusercontent.com",
+              "audience": os.environ["WIF_AUDIENCE"],
+              "attribute_mapping": expected_mapping,
+              "attribute_condition": expected_condition,
+              "admitted_sha": accepted_main_sha,
+          }
+          if readback != exact:
+              fail("WIF_PROVIDER_EXACT_READBACK_MISMATCH_OR_TRUST_SCHEMA_DRIFT")
+
+          readback_fingerprint = hashlib.sha256(canonical(readback).encode("utf-8")).hexdigest()
+
+          template = evidence["provider_config"]["final_payload_template"]
+          payload = json.loads(canonical(template))
+          if payload.get("accepted_main_admission_mode") != "EXACT_ACCEPTED_MAIN_ONLY":
+              fail("ACCEPTED_MAIN_ADMISSION_MODE_DRIFT")
+          if payload.get("accepted_main_sha") != "POST_MERGE_EXACT_ACCEPTED_MAIN_SHA_REQUIRED":
+              fail("PREMERGE_ACCEPTED_MAIN_SHA_BINDING_DRIFT")
+          payload["accepted_main_sha"] = accepted_main_sha
+          payload["deployment_mechanism"]["workflow_blob"] = workflow_blob
+
+          provider_root = ["GSPC3", "CUTOVER_GOOGLE_PROVIDER_CONFIG", payload]
+          provider_config_id = "GSPC3_" + hashlib.sha256(canonical(provider_root).encode("utf-8")).hexdigest()
+
+          fixed = evidence["premerge_finalizable_identities"]
+          capabilities = evidence["capability_matrix"]["capabilities"]
+          pcm_digest = ksha([
+              evidence["capability_matrix"]["derivation_version"],
+              fixed["implementation_build_id"],
+              fixed["mutation_adapter_fingerprint"],
+              provider_config_id,
+              fixed["resource_scope_fingerprint"],
+              fixed["credential_binding_id"],
+              os.environ["CREDENTIAL_LIFECYCLE_ID"],
+              *["CAP=" + capability for capability in capabilities],
+          ])
+          capability_matrix_version = "PCM8_CUTOVER_WIF_" + pcm_digest[:24]
+
+          acceptance_binding_id = "AB1_" + ksha([
+              fixed["implementation_build_id"],
+              "a5f6447dd54fa3b5c5cdcb6ffada335cfe28fd8b3dad85b77693f522aab3c53f",
+              "ba3bb9599a034a764c9bdfd10a3dca79436fbae80960ace6a64e2786035909f8",
+              fixed["mutation_adapter_fingerprint"],
+              provider_config_id,
+              "RS1_84f170ffef50fecc331de87458db2bee9aeebf1bdf7c4e079260c338d477d7e1",
+              "84f170ffef50fecc331de87458db2bee9aeebf1bdf7c4e079260c338d477d7e1",
+              "MSET1_2f76282f0cc13c1df38b414d0221bebcc7f739fcb749ac6d7012e438f42f1cbc",
+              "f9ae8ed9716b5dd447bad5f9951baef2bfb3f29161120a8118280204a1290ca7",
+              "ROUTE_V1",
+              "SHARED_ARCHIVE_INFRASTRUCTURE",
+              fixed["resource_scope_fingerprint"],
+              capability_matrix_version,
+              fixed["credential_binding_id"],
+              os.environ["CREDENTIAL_LIFECYCLE_ID"],
+              "DEPLOYMENT_READINESS_EVIDENCE_VERSION=DRE1",
+              "ACTIVATION_FENCE=EXACT_POST_MERGE_PROVIDER_ADMISSION_AND_DRE1_FENCE",
+          ])
+
+          materialized = {
+              "accepted_main_sha": accepted_main_sha,
+              "accepted_main_source": "FRESH_READ_REFS_HEADS_MAIN_AFTER_GOVERNED_MERGE",
+              "approved_base_main": approved_base,
+              "approved_candidate_commit": approved_candidate,
+              "wif_provider_admitted_sha": readback["admitted_sha"],
+              "wif_provider_admission_readback_fingerprint": readback_fingerprint,
+              "provider_config_id": provider_config_id,
+              "capability_matrix_version": capability_matrix_version,
+              "acceptance_binding_id": acceptance_binding_id,
+              "credential_lifecycle_id": os.environ["CREDENTIAL_LIFECYCLE_ID"],
+              "authority_status": "DERIVATION_ONLY_PENDING_DRE1_AND_ACTIVATION_FENCE",
+          }
+          with open("post-merge-provider-config-materialization.json", "w", encoding="utf-8") as f:
+              json.dump(materialized, f, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+              f.write("\n")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              for key in (
+                  "provider_config_id",
+                  "capability_matrix_version",
+                  "acceptance_binding_id",
+                  "wif_provider_admitted_sha",
+                  "wif_provider_admission_readback_fingerprint",
+              ):
+                  f.write(key + "=" + materialized[key] + "\n")
+
+          print("POST_MERGE_PROVIDER_CONFIG_MATERIALIZATION=PASS")
+          print("ACCEPTED_MAIN_SHA_SOURCE=FRESH_READ_REFS_HEADS_MAIN_AFTER_GOVERNED_MERGE")
+          print("WIF_PROVIDER_EXACT_READBACK=PASS")
+          print("WIF_TRUST_SCHEMA_UNCHANGED=PASS")
+          print("FINAL_IDENTITY_CHAIN_DERIVED=PASS")
+          PY
+
+          rm -f "$READBACK_FILE"
+          trap - EXIT
+
+      - name: Establish conservative token freshness window
+        id: mint-window
+        shell: bash
+        run: |
+          set -euo pipefail
+          ISSUED_EPOCH="$(date -u +%s)"
+          EXPIRES_EPOCH="$((ISSUED_EPOCH + 1800))"
+          ISSUED_AT="$(date -u -d "@$ISSUED_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
+          EXPIRES_AT="$(date -u -d "@$EXPIRES_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
+          {
+            echo "issued_at=$ISSUED_AT"
+            echo "expires_at=$EXPIRES_AT"
+            echo "expires_epoch=$EXPIRES_EPOCH"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Mint short-lived Sheets-scoped Google access token through WIF
+        id: google-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          project_id: workos-control-plane
+          workload_identity_provider: projects/959429469584/locations/global/workloadIdentityPools/workos-cutover-witness/providers/github-workos-d1-runtime
+          service_account: workos-cutover-witness@workos-control-plane.iam.gserviceaccount.com
+          audience: projects/959429469584/locations/global/workloadIdentityPools/workos-cutover-witness/providers/github-workos-d1-runtime
+          token_format: access_token
+          access_token_lifetime: 1800s
+          access_token_scopes: https://www.googleapis.com/auth/spreadsheets
+          create_credentials_file: false
+          export_environment_variables: false
+
+      - name: Verify freshness margin before deployment
+        shell: bash
+        env:
+          EXPIRES_EPOCH: ${{ steps.mint-window.outputs.expires_epoch }}
+        run: |
+          set -euo pipefail
+          NOW="$(date -u +%s)"
+          test "$NOW" -le "$((EXPIRES_EPOCH - 300))"
+          echo "GOOGLE_TOKEN_FRESHNESS_PRE_DEPLOY=PASS"
+
+      - name: Deploy exact accepted witness Worker with bounded transient token
+        shell: bash
+        env:
+          GOOGLE_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          APPROVED_CANDIDATE_COMMIT: ${{ steps.provenance.outputs.approved_candidate_commit }}
+          PROVIDER_CONFIG_ID: ${{ steps.materialize.outputs.provider_config_id }}
+          ACCEPTANCE_BINDING_ID: ${{ steps.materialize.outputs.acceptance_binding_id }}
+          WORKFLOW_BLOB: ${{ steps.provenance.outputs.workflow_blob }}
+          TOKEN_ISSUED_AT: ${{ steps.mint-window.outputs.issued_at }}
+          TOKEN_EXPIRES_AT: ${{ steps.mint-window.outputs.expires_at }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$RUNTIME_SECRET"
+          test -n "$GOOGLE_ACCESS_TOKEN"
+
+          SECRETS_FILE="$(mktemp)"
+          trap 'rm -f "$SECRETS_FILE"' EXIT
+          chmod 600 "$SECRETS_FILE"
+          {
+            printf 'RUNTIME_SECRET=%s\n' "$RUNTIME_SECRET"
+            printf 'CUTOVER_WITNESS_GOOGLE_ACCESS_TOKEN=%s\n' "$GOOGLE_ACCESS_TOKEN"
+          } > "$SECRETS_FILE"
+
+          npx wrangler deploy \
+            --config wrangler.cutover-witness.jsonc \
+            --secrets-file "$SECRETS_FILE" \
+            --var CUTOVER_WITNESS_BUILD_COMMIT:"$GITHUB_SHA" \
+            --var CUTOVER_WITNESS_PROVIDER_CONFIG_ID:"$PROVIDER_CONFIG_ID" \
+            --var CUTOVER_WITNESS_ACCEPTANCE_BINDING_ID:"$ACCEPTANCE_BINDING_ID" \
+            --var CUTOVER_WITNESS_CREDENTIAL_LIFECYCLE_ID:"$CREDENTIAL_LIFECYCLE_ID" \
+            --var CUTOVER_WITNESS_APPROVED_CANDIDATE_COMMIT:"$APPROVED_CANDIDATE_COMMIT" \
+            --var CUTOVER_WITNESS_WORKFLOW_BLOB:"$WORKFLOW_BLOB" \
+            --var CUTOVER_WITNESS_GOOGLE_AUTH_ACTION_SHA:"$GOOGLE_AUTH_ACTION_SHA" \
+            --var CUTOVER_WITNESS_TOKEN_ISSUED_AT:"$TOKEN_ISSUED_AT" \
+            --var CUTOVER_WITNESS_TOKEN_EXPIRES_AT:"$TOKEN_EXPIRES_AT" \
+            --var CUTOVER_WITNESS_GOOGLE_SCOPE:"$GOOGLE_SCOPE" \
+            --var CUTOVER_WITNESS_WIF_PROVIDER:"$WIF_PROVIDER" \
+            --var CUTOVER_WITNESS_SERVICE_PRINCIPAL:"$SERVICE_PRINCIPAL"
+
+          rm -f "$SECRETS_FILE"
+          trap - EXIT
+          echo "WORKER_DEPLOYED=TRUE"
+          echo "SECRET_VALUES_DISCLOSED=FALSE"
+
+      - name: Exact deployed build, lifecycle, freshness and FixtureRoot readiness
+        id: readiness
+        shell: bash
+        env:
+          APPROVED_CANDIDATE_COMMIT: ${{ steps.provenance.outputs.approved_candidate_commit }}
+          PROVIDER_CONFIG_ID: ${{ steps.materialize.outputs.provider_config_id }}
+          ACCEPTANCE_BINDING_ID: ${{ steps.materialize.outputs.acceptance_binding_id }}
+          WORKFLOW_BLOB: ${{ steps.provenance.outputs.workflow_blob }}
+          TOKEN_ISSUED_AT: ${{ steps.mint-window.outputs.issued_at }}
+          TOKEN_EXPIRES_AT: ${{ steps.mint-window.outputs.expires_at }}
+        run: |
+          set -euo pipefail
+          OUT="$(mktemp)"
+          trap 'rm -f "$OUT"' EXIT
+          CODE="$(curl -sS -o "$OUT" -w '%{http_code}' \
+            -H "Authorization: Bearer $RUNTIME_SECRET" \
+            "$WORKER_URL/cutover/witness/readiness")"
+          test "$CODE" = "200"
+
+          jq -e \
+            --arg commit "$GITHUB_SHA" \
+            --arg candidate "$APPROVED_CANDIDATE_COMMIT" \
+            --arg workflow_blob "$WORKFLOW_BLOB" \
+            --arg provider "$PROVIDER_CONFIG_ID" \
+            --arg binding "$ACCEPTANCE_BINDING_ID" \
+            --arg lifecycle "$CREDENTIAL_LIFECYCLE_ID" \
+            --arg auth_action "$GOOGLE_AUTH_ACTION_SHA" \
+            --arg wif "$WIF_PROVIDER" \
+            --arg principal "$SERVICE_PRINCIPAL" \
+            --arg scope "$GOOGLE_SCOPE" \
+            --arg issued "$TOKEN_ISSUED_AT" \
+            --arg expires "$TOKEN_EXPIRES_AT" \
+            '
+              .status == "READY" and
+              .service == "workos-cutover-witness" and
+              .build_commit == $commit and
+              .approved_candidate_commit == $candidate and
+              .workflow_blob == $workflow_blob and
+              .provider_config_id == $provider and
+              .acceptance_binding_id == $binding and
+              .credential_lifecycle_id == $lifecycle and
+              .google_auth_action_sha == $auth_action and
+              .wif_provider == $wif and
+              .service_principal == $principal and
+              .google_scope == $scope and
+              .token_issued_at == $issued and
+              .token_expires_at == $expires and
+              .credential_freshness == "PASS" and
+              .formal_route == "/cutover/witness" and
+              .caller_auth_binding == "RUNTIME_SECRET" and
+              .provider_auth_mode == "GOOGLE_OAUTH_BEARER_ACCESS_TOKEN_EPHEMERAL" and
+              .google_credential_binding == "CUTOVER_WITNESS_GOOGLE_ACCESS_TOKEN" and
+              .credential_value_disclosed == false and
+              .provider_readiness.provider == "GoogleSheetsControlPlaneProvider" and
+              .provider_readiness.fixture_root_id == "GFR1_7bd591adcefe2c5b178eeb49af142e4b4f25b4da83caba8b6d44546617c1f40e" and
+              .provider_readiness.fixture_spreadsheet_id == "11DKed3wVcnryEQrgHzfR276znYJLRAwM14ZOEwCkS1Y" and
+              .provider_readiness.exact_readback == true and
+              .provider_readiness.credential_present == true and
+              .provider_readiness.credential_value_disclosed == false
+            ' "$OUT" >/dev/null
+
+          PROVIDER_READBACK_FINGERPRINT="$(
+            jq -cS '.provider_readiness' "$OUT" | sha256sum | awk '{print $1}'
+          )"
+          echo "provider_readback_fingerprint=$PROVIDER_READBACK_FINGERPRINT" >> "$GITHUB_OUTPUT"
+          echo "GOOGLE_PROVIDER_READINESS=TRUE"
+          echo "CREDENTIAL_LIFECYCLE_READBACK=TRUE"
+          echo "CREDENTIAL_FRESHNESS_READBACK=TRUE"
+          echo "SECRET_VALUES_DISCLOSED=FALSE"
+
+      - name: Verify authenticated formal route without executing governed witness
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$(mktemp)"
+          trap 'rm -f "$OUT"' EXIT
+          CODE="$(curl -sS -o "$OUT" -w '%{http_code}' \
+            -X POST "$WORKER_URL/cutover/witness" \
+            -H 'Content-Type: application/json' \
+            --data '{}')"
+          test "$CODE" = "401"
+          jq -e '.status == "FAILED" and .error == "UNAUTHORIZED"' "$OUT" >/dev/null
+
+          CODE="$(curl -sS -o "$OUT" -w '%{http_code}' \
+            -X POST "$WORKER_URL/cutover/witness" \
+            -H "Authorization: Bearer $RUNTIME_SECRET" \
+            -H 'Content-Type: application/json' \
+            --data '{}')"
+          test "$CODE" = "400"
+          jq -e '.status == "FAILED" and .error == "INVALID_WITNESS_INVOCATION"' "$OUT" >/dev/null
+          echo "FORMAL_ROUTE_DEPLOYED_AND_AUTHENTICATED=TRUE"
+          echo "GOVERNED_8_CASE_WITNESS_EXECUTED=FALSE"
+
+      - name: Materialize deterministic DRE1 terminal PASS evidence
+        id: dre
+        shell: bash
+        env:
+          APPROVED_CANDIDATE_COMMIT: ${{ steps.provenance.outputs.approved_candidate_commit }}
+          PROVIDER_CONFIG_ID: ${{ steps.materialize.outputs.provider_config_id }}
+          ACCEPTANCE_BINDING_ID: ${{ steps.materialize.outputs.acceptance_binding_id }}
+          WORKFLOW_BLOB: ${{ steps.provenance.outputs.workflow_blob }}
+          TOKEN_ISSUED_AT: ${{ steps.mint-window.outputs.issued_at }}
+          TOKEN_EXPIRES_AT: ${{ steps.mint-window.outputs.expires_at }}
+          PROVIDER_READBACK_FINGERPRINT: ${{ steps.readiness.outputs.provider_readback_fingerprint }}
+          WIF_PROVIDER_ADMITTED_SHA: ${{ steps.materialize.outputs.wif_provider_admitted_sha }}
+          WIF_PROVIDER_ADMISSION_READBACK_FINGERPRINT: ${{ steps.materialize.outputs.wif_provider_admission_readback_fingerprint }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os
+          payload = {
+              "acceptance_binding_id": os.environ["ACCEPTANCE_BINDING_ID"],
+              "accepted_main_commit": os.environ["GITHUB_SHA"],
+              "accepted_main_sha": os.environ["GITHUB_SHA"],
+              "approved_candidate_commit": os.environ["APPROVED_CANDIDATE_COMMIT"],
+              "credential_freshness": "PASS",
+              "credential_lifecycle_id": os.environ["CREDENTIAL_LIFECYCLE_ID"],
+              "deployed_build_commit": os.environ["GITHUB_SHA"],
+              "formal_route_readiness": "PASS",
+              "github_workflow_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "github_workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "google_auth_action_sha": os.environ["GOOGLE_AUTH_ACTION_SHA"],
+              "provider_config_id": os.environ["PROVIDER_CONFIG_ID"],
+              "provider_readback_fingerprint": os.environ["PROVIDER_READBACK_FINGERPRINT"],
+              "service_principal": os.environ["SERVICE_PRINCIPAL"],
+              "terminal_finality": "PASS",
+              "token_expires_at": os.environ["TOKEN_EXPIRES_AT"],
+              "token_issued_at": os.environ["TOKEN_ISSUED_AT"],
+              "token_mint": "PASS",
+              "wif_pool_full_name": "projects/959429469584/locations/global/workloadIdentityPools/workos-cutover-witness",
+              "wif_provider_full_name": os.environ["WIF_PROVIDER"],
+              "wif_provider_admitted_sha": os.environ["WIF_PROVIDER_ADMITTED_SHA"],
+              "wif_provider_admission_readback_fingerprint": os.environ["WIF_PROVIDER_ADMISSION_READBACK_FINGERPRINT"],
+              "worker_target": os.environ["WORKER_URL"],
+              "workflow_blob": os.environ["WORKFLOW_BLOB"],
+          }
+          root = ["DRE1", "CUTOVER_WITNESS_DEPLOYMENT_READINESS", payload]
+          canonical = json.dumps(root, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+          digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+          evidence = {
+              "deployment_readiness_evidence_id": "DRE1_" + digest,
+              "version": "DRE1",
+              "payload": payload,
+              "canonical_sha256": digest,
+              "secret_material_included": False,
+          }
+          with open("deployment-readiness-evidence.json", "w", encoding="utf-8") as f:
+              json.dump(evidence, f, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+              f.write("\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write("deployment_readiness_evidence_id=DRE1_" + digest + "\n")
+          print("DEPLOYMENT_READINESS_EVIDENCE_ID=DRE1_" + digest)
+          print("DEPLOYMENT_READINESS_TERMINAL_PASS=TRUE")
+          print("SECRET_VALUES_DISCLOSED=FALSE")
+          PY
+
+      - name: Preserve DRE1 as exact run artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cutover-witness-deployment-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: deployment-readiness-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publication handoff fence
+        shell: bash
+        env:
+          DRE_ID: ${{ steps.dre.outputs.deployment_readiness_evidence_id }}
+          ACCEPTANCE_BINDING_ID: ${{ steps.materialize.outputs.acceptance_binding_id }}
+        run: |
+          set -euo pipefail
+          test -n "$DRE_ID"
+          test -n "$ACCEPTANCE_BINDING_ID"
+          echo "DEPLOYMENT_READINESS_COMPLETE=TRUE"
+          echo "DEPLOYMENT_READINESS_EVIDENCE_ID=$DRE_ID"
+          echo "ACCEPTANCE_ACTIVATION_PERFORMED=FALSE"
+          echo "ACTIVATION_FENCE=EXACT_POST_MERGE_PROVIDER_ADMISSION_AND_DRE1_FENCE"
+          echo "ACTIVATION_REQUIRES_FRESH_WIF_PROVIDER_READBACK=TRUE"
+          echo "ACTIVATION_EQUALITIES=current main == DRE1.accepted_main_commit == final GSPC3 accepted_main_sha == fresh WIF admitted SHA; approved candidate == merge second parent; approved base == merge first parent; final GSPC3/PCM/Acceptance_Binding == independent recomputation; DRE1 GSPC3/Acceptance_Binding/GCL1/WIF admitted SHA/readback fingerprint exact; terminal finality PASS"
+          echo "STALE_MISSING_MISMATCHED_DRE1=FAIL_CLOSED"
+          echo "PREMERGE_IDENTITY_ACTIVATION=FAIL_CLOSED"
