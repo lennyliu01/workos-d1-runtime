@@ -10,7 +10,8 @@
     "test:cutover-postpub": "tsx tests/cutover_post_publication_repair_owner_validation.ts",
     "test:cutover-deployment-config": "tsx tests/cutover_deployment_config_repair_owner_validation.ts",
     "test:cutover-wif": "tsx tests/cutover_wif_contract_validation.ts && tsx tests/cutover_deployment_config_candidate_binding_validation.ts && tsx tests/cutover_provider_config_sequencing_validation.ts",
-    "test:cutover-sequencing": "tsx tests/cutover_provider_config_sequencing_validation.ts"
+    "test:cutover-sequencing": "tsx tests/cutover_provider_config_sequencing_validation.ts",
+    "test:workos-business-executor": "tsx tests/workos_control_plane_loader_validation.ts && tsx tests/workos_runtime_client_equivalence_validation.ts && tsx tests/workos_business_executor_validation.ts"
   },
   "devDependencies": {
     "tsx": "^4.20.0",
