@@ -1,0 +1,102 @@
+name: WorkOS Business Executor Candidate
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+    - cron: '15 4 * * *'
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: Registered Task_ID for READ-only witness
+        required: true
+        type: choice
+        options:
+          - US_JAPAN_FX_POLICY
+          - ROLLING_WEDGE_INVESTMENT
+      witness_read_only:
+        description: Must remain true before production cutover
+        required: true
+        default: true
+        type: boolean
+  pull_request:
+    paths:
+      - '.github/workflows/workos-business-executor.yml'
+      - '.github/workflows/runtime-invocation-adapter.yml'
+      - 'src/workos_*.ts'
+      - 'src/runtime_invocation_client.ts'
+      - 'tests/workos_*validation.ts'
+      - 'package.json'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: >-
+    workos-business-executor-${{
+      github.event.schedule == '0 2 * * *' && 'fx' ||
+      github.event.schedule == '15 4 * * *' && 'rw' ||
+      inputs.task_id || 'validation'
+    }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run test:workos-business-executor
+      - name: Freeze generated dependency lock for candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: workos-business-executor-package-lock
+          path: package-lock.json
+          if-no-files-found: error
+
+  execute:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+
+      - name: Authenticate Google control-plane reader
+        id: google_auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: access_token
+          workload_identity_provider: ${{ vars.WORKOS_EXECUTOR_GOOGLE_WIF_PROVIDER }}
+          service_account: ${{ vars.WORKOS_EXECUTOR_GOOGLE_SERVICE_ACCOUNT }}
+          access_token_scopes: >-
+            https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/spreadsheets.readonly
+
+      - name: Execute registered WorkOS Workflow or READ-only witness
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
+          WORKOS_TASK_ID: ${{ inputs.task_id }}
+          WORKOS_WITNESS_READ_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.witness_read_only || 'false' }}
+          WORKOS_PRODUCTION_WRITES_ENABLED: ${{ github.event_name == 'schedule' && 'true' || 'false' }}
+          WORKOS_EXECUTOR_FX_ENABLED: ${{ vars.WORKOS_EXECUTOR_FX_ENABLED }}
+          WORKOS_EXECUTOR_RW_ENABLED: ${{ vars.WORKOS_EXECUTOR_RW_ENABLED }}
+          WORKOS_SCHEDULED_OCCURRENCE: ${{ github.event.schedule }}:${{ github.run_id }}
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.google_auth.outputs.access_token }}
+          OPENAI_WIF_AUDIENCE: ${{ vars.OPENAI_WIF_AUDIENCE }}
+          OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.OPENAI_IDENTITY_PROVIDER_ID }}
+          OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.OPENAI_SERVICE_ACCOUNT_ID }}
+          RUNTIME_SECRET: ${{ secrets.RUNTIME_SECRET }}
+        run: npx tsx src/workos_business_executor.ts
