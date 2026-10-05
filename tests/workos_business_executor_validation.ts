@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { capabilitiesFor } from "../src/workos_capability_profiles.js";
+import { canonicalScheduledOccurrence } from "../src/workos_schedule_occurrence.js";
 import {
   deterministicCycleId, isProductionFenceEnabled, taskForCron, validateRoleReturn,
   validateWorkflowTransition, invokeWriteWithFinality, FX_CRON, RW_CRON,
@@ -20,8 +21,17 @@ assert.equal(isProductionFenceEnabled("US_JAPAN_FX_POLICY", {}), false);
 assert.equal(isProductionFenceEnabled("ROLLING_WEDGE_INVESTMENT", {}), false);
 assert.equal(isProductionFenceEnabled("US_JAPAN_FX_POLICY", { WORKOS_EXECUTOR_FX_ENABLED: "true" } as any), true);
 const occurrence = "2026-10-05T11:00:00+09:00";
-assert.equal(deterministicCycleId("US_JAPAN_FX_POLICY", occurrence), deterministicCycleId("US_JAPAN_FX_POLICY", occurrence));
-assert.notEqual(deterministicCycleId("US_JAPAN_FX_POLICY", occurrence), deterministicCycleId("ROLLING_WEDGE_INVESTMENT", occurrence));
+const fxOriginal = canonicalScheduledOccurrence("US_JAPAN_FX_POLICY", "2026-10-05T02:03:00Z");
+assert.equal(fxOriginal, occurrence);
+assert.equal(canonicalScheduledOccurrence("US_JAPAN_FX_POLICY", "2026-10-05T15:59:59Z"), occurrence);
+assert.equal(canonicalScheduledOccurrence("US_JAPAN_FX_POLICY", "2026-10-05T02:03:00Z"), fxOriginal);
+assert.equal(canonicalScheduledOccurrence("US_JAPAN_FX_POLICY", "2026-10-05T02:03:00Z"), fxOriginal);
+assert.equal(canonicalScheduledOccurrence("US_JAPAN_FX_POLICY", "2026-10-06T01:59:59Z"), occurrence);
+assert.equal(canonicalScheduledOccurrence("US_JAPAN_FX_POLICY", "2026-10-06T02:00:00Z"), "2026-10-06T11:00:00+09:00");
+assert.equal(canonicalScheduledOccurrence("ROLLING_WEDGE_INVESTMENT", "2026-10-05T04:15:01Z"), "2026-10-05T13:15:00+09:00");
+assert.equal(canonicalScheduledOccurrence("ROLLING_WEDGE_INVESTMENT", "2026-10-06T04:15:01Z"), "2026-10-06T13:15:00+09:00");
+assert.equal(deterministicCycleId("US_JAPAN_FX_POLICY", fxOriginal), deterministicCycleId("US_JAPAN_FX_POLICY", occurrence));
+assert.notEqual(deterministicCycleId("US_JAPAN_FX_POLICY", occurrence), deterministicCycleId("ROLLING_WEDGE_INVESTMENT", "2026-10-05T13:15:00+09:00"));
 assert.notEqual(deterministicCycleId("US_JAPAN_FX_POLICY", occurrence), deterministicCycleId("US_JAPAN_FX_POLICY", "2026-10-06T11:00:00+09:00"));
 validateWorkflowTransition("US_JAPAN_FX_POLICY", { kind: "DISPATCH_ROLE", role: "COLLECTOR", payload: {}, reason: null });
 assert.throws(() => validateWorkflowTransition("US_JAPAN_FX_POLICY", { kind: "DISPATCH_ROLE", role: "MONITOR", payload: {}, reason: null }), /UNREGISTERED_ROLE_DISPATCH/);
@@ -34,9 +44,12 @@ const workflowYaml = await readFile(".github/workflows/workos-business-executor.
 assert.match(workflowYaml, /workos-business-executor-\$\{\{/);
 assert.match(workflowYaml, /'US_JAPAN_FX_POLICY'/);
 assert.match(workflowYaml, /'ROLLING_WEDGE_INVESTMENT'/);
-assert.doesNotMatch(workflowYaml, /github\.run_id/);
-assert.match(workflowYaml, /T11:00:00\+09:00/);
-assert.match(workflowYaml, /T13:15:00\+09:00/);
+assert.match(workflowYaml, /actions\/runs\/\$RUN_ID/);
+assert.match(workflowYaml, /RUN_ID: \$\{\{ github\.run_id \}\}/);
+assert.match(workflowYaml, /WORKOS_SCHEDULE_OCCURRENCE_CLI=true/);
+assert.match(workflowYaml, /WORKOS_SCHEDULED_OCCURRENCE: \$\{\{ steps\.occurrence\.outputs\.occurrence \}\}/);
+assert.doesNotMatch(workflowYaml, /TZ=Asia\/Tokyo date/);
+assert.doesNotMatch(workflowYaml, /github\.run_attempt/);
 assert.doesNotMatch(workflowYaml, /OPENAI_WIF_TOKEN_EXCHANGE_URL/);
 
 const sdkEnv = {
