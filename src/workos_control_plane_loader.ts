@@ -199,7 +199,7 @@ function normalizeAccess(
       writerScopes: [],
       writeMode: "APPEND_ONLY",
       dynamicInstance: dynamic,
-      businessAuthorityState: dynamic ? "PENDING" : "ACTIVE",
+      businessAuthorityState: "UNRESOLVED",
     });
   }
 
