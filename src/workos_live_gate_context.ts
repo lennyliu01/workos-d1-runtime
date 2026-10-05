@@ -55,16 +55,22 @@ function bool(v:string,label:string):boolean{
   throw new Error(`LIVE_GATE_CONTEXT_INVALID:${label}:${v}`);
 }
 function field(block:string,label:string):string{
-  const m=block.match(new RegExp(`^- ${label.replace(/[.*+?^$\{\}()|[\\]\\\\]/g,"\\\\$&")}: \\`?([^\\n\\`]+)`,"m"));
-  if(!m) throw new Error(`LIVE_GATE_CONTEXT_INVALID:BUSINESS_AUTHORITY_FIELD:${label}`);
-  return m[1].trim();
+  const prefix=`- ${label}: `;
+  const matches=block.split("\n").filter(line=>line.startsWith(prefix));
+  if(matches.length!==1) throw new Error(`LIVE_GATE_CONTEXT_AMBIGUOUS:BUSINESS_AUTHORITY_FIELD:${label}:${matches.length}`);
+  const raw=matches[0].slice(prefix.length).trim();
+  const value=raw.startsWith("`")&&raw.endsWith("`")?raw.slice(1,-1):raw;
+  if(!value) throw new Error(`LIVE_GATE_CONTEXT_INVALID:BUSINESS_AUTHORITY_FIELD:${label}`);
+  return value;
 }
 function companyState(text:string,id:string):string{
-  const marker=`## ${id}`;
-  const starts=[...text.matchAll(new RegExp(`^${marker.replace(/[.*+?^$\{\}()|[\\]\\\\]/g,"\\\\$&")}$`,"gm"))].map(m=>m.index!);
-  if(starts.length!==1) throw new Error(`LIVE_GATE_CONTEXT_AMBIGUOUS:COMPANY_AUTHORITY:${id}:${starts.length}`);
-  const start=starts[0], next=text.indexOf("\n## ",start+marker.length);
-  const block=text.slice(start,next<0?text.length:next);
+  const lines=text.split("\n"), marker=`## ${id}`;
+  const positions=lines.map((line,index)=>line===marker?index:-1).filter(index=>index>=0);
+  if(positions.length!==1) throw new Error(`LIVE_GATE_CONTEXT_AMBIGUOUS:COMPANY_AUTHORITY:${id}:${positions.length}`);
+  const start=positions[0];
+  let end=lines.length;
+  for(let i=start+1;i<lines.length;i++){if(lines[i].startsWith("## ")){end=i;break;}}
+  const block=lines.slice(start,end).join("\n");
   const monitor=bool(field(block,"Monitor_Enabled"),`MONITOR_ENABLED:${id}`);
   const archived=bool(field(block,"Archived"),`ARCHIVED:${id}`);
   const state=field(block,"State_Status");
@@ -75,7 +81,6 @@ function companyState(text:string,id:string):string{
   if(state==="ACTIVE"&&monitor) return "ACTIVE";
   return state==="ACTIVE"?"DISABLED":state;
 }
-
 export async function loadLiveGateContext(reader:ExactControlPlaneReader,input:LiveContextInput):Promise<LiveGateContext>{
   const [metaV,resV,contractsV,datasetContractsV]=await Promise.all([
     reader.readSheet(input.currentRegistryFileId,"Registry_Metadata","A1:K5"),
