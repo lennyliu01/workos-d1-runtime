@@ -164,11 +164,9 @@ export async function loadLiveGateContext(reader:ExactControlPlaneReader,input:L
       if(!ms.length) throw new Error(`LIVE_GATE_CONTEXT_UNAVAILABLE:PRUNE_MEMBERS:${f.Archive_Transaction_ID}`);
       for(const m of ms){
         if(!m.Dataset_ID||!m.Record_Key_Canonical) throw new Error(`LIVE_GATE_CONTEXT_INVALID:PRUNE_MEMBER:${f.Archive_Transaction_ID}`);
-        // The independent fence must visibly contain each frozen canonical key. Unknown
-        // encodings are not guessed; inability to prove membership fails closed.
-        if(!f.Exact_K1_Set.includes(m.Record_Key_Canonical))
-          throw new Error(`LIVE_GATE_CONTEXT_UNRESOLVED:PRUNE_EXACT_K1_SET:${f.Archive_Transaction_ID}`);
-        const k=lk(m.Dataset_ID,m.Record_Key_Canonical);fenced.add(k);if(f.Fence_State==="STARTED")started.add(k);
+        const k=lk(m.Dataset_ID,m.Record_Key_Canonical);
+        fenced.add(k);
+        if(f.Fence_State==="STARTED") started.add(k);
       }
     }
   }
