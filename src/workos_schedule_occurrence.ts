@@ -16,3 +16,10 @@ export function canonicalScheduledOccurrence(taskId: ScheduledTaskId, originalRu
   const jstDate = new Date(boundary + 32400000).toISOString().slice(0, 10);
   return jstDate + "T" + spec.jstClock + "+09:00";
 }
+
+if (process.env.WORKOS_SCHEDULE_OCCURRENCE_CLI === "true") {
+  const taskId = process.argv[2] as ScheduledTaskId | undefined;
+  const createdAt = process.argv[3];
+  if (!taskId || !createdAt) throw new Error("SCHEDULE_OCCURRENCE_ARGUMENT_MISSING");
+  process.stdout.write(canonicalScheduledOccurrence(taskId, createdAt));
+}
