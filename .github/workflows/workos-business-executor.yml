@@ -67,6 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -89,12 +90,10 @@ jobs:
           set -euo pipefail
           execute=false
           task_id=""
-          occurrence=""
-          jst_date="$(TZ=Asia/Tokyo date +%F)"
           if [ "$EVENT_NAME" = "schedule" ]; then
             case "$EVENT_SCHEDULE" in
-              '0 2 * * *') task_id='US_JAPAN_FX_POLICY'; enabled="${FX_ENABLED:-}"; occurrence="${jst_date}T11:00:00+09:00" ;;
-              '15 4 * * *') task_id='ROLLING_WEDGE_INVESTMENT'; enabled="${RW_ENABLED:-}"; occurrence="${jst_date}T13:15:00+09:00" ;;
+              '0 2 * * *') task_id='US_JAPAN_FX_POLICY'; enabled="${FX_ENABLED:-}" ;;
+              '15 4 * * *') task_id='ROLLING_WEDGE_INVESTMENT'; enabled="${RW_ENABLED:-}" ;;
               *) echo "Unknown schedule: $EVENT_SCHEDULE" >&2; exit 20 ;;
             esac
             if [ "$enabled" = "true" ]; then
@@ -112,6 +111,23 @@ jobs:
           fi
           echo "execute=$execute" >> "$GITHUB_OUTPUT"
           echo "task_id=$task_id" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve immutable scheduled occurrence
+        id: occurrence
+        if: steps.route.outputs.execute == 'true' && github.event_name == 'schedule'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          TASK_ID: ${{ steps.route.outputs.task_id }}
+        run: |
+          set -euo pipefail
+          created_at="$(gh api "repos/$REPOSITORY/actions/runs/$RUN_ID" --jq '.created_at')"
+          test -n "$created_at"
+          occurrence="$(WORKOS_SCHEDULE_OCCURRENCE_CLI=true npx tsx src/workos_schedule_occurrence.ts "$TASK_ID" "$created_at")"
+          test -n "$occurrence"
+          echo "created_at=$created_at" >> "$GITHUB_OUTPUT"
           echo "occurrence=$occurrence" >> "$GITHUB_OUTPUT"
 
       - name: Authenticate Google control-plane reader
@@ -135,7 +151,7 @@ jobs:
           WORKOS_PRODUCTION_WRITES_ENABLED: ${{ github.event_name == 'schedule' && 'true' || 'false' }}
           WORKOS_EXECUTOR_FX_ENABLED: ${{ vars.WORKOS_EXECUTOR_FX_ENABLED }}
           WORKOS_EXECUTOR_RW_ENABLED: ${{ vars.WORKOS_EXECUTOR_RW_ENABLED }}
-          WORKOS_SCHEDULED_OCCURRENCE: ${{ steps.route.outputs.occurrence }}
+          WORKOS_SCHEDULED_OCCURRENCE: ${{ steps.occurrence.outputs.occurrence }}
           GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.google_auth.outputs.access_token }}
           OPENAI_WIF_AUDIENCE: ${{ vars.OPENAI_WIF_AUDIENCE }}
           OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.OPENAI_IDENTITY_PROVIDER_ID }}
