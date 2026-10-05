@@ -1,8 +1,11 @@
 import {
+  PINNED_GATE_BLOB,
   PINNED_GATE_CONFIG_FINGERPRINT,
   PINNED_GATE_LOCATOR,
+  type AuthorityPublicationProjection,
   type GateProjectionSnapshot,
   type ManifestAccessRow,
+  type WriterScopeProjection,
 } from "./workos_persistent_gate_projection.js";
 
 export const AGENTS_FILE_ID = "1vLsNv3YZK-dAJh7jln7KbGLfWzp2k3ec";
@@ -26,12 +29,16 @@ export interface TaskRegistration {
 }
 
 export interface AuthoritySnapshot {
+  authorityScopeFingerprint: string;
   currentCutoverId: string;
   activationEpoch: string;
   registrySnapshotId: string;
+  registryFingerprint: string;
   manifestSetId: string;
   gateConfigFingerprint: string;
   workflowSetFingerprint: string;
+  referencedCutoverState: string;
+  migrationWriteFenceState: string;
 }
 
 export interface LoadedControlPlane {
@@ -98,13 +105,21 @@ function parseRegistration(agents: string, taskId: SupportedTaskId): TaskRegistr
 function rowsToObjects(values: string[][]): Record<string, string>[] {
   if (values.length < 2) return [];
   const [headers, ...rows] = values;
-  return rows.filter((row) => row.some((v) => v !== "")).map((row) => Object.fromEntries(headers.map((h, i) => [h, row[i] ?? ""])));
+  return rows
+    .filter((row) => row.some((v) => v !== ""))
+    .map((row) => Object.fromEntries(headers.map((h, i) => [h, row[i] ?? ""])));
 }
 
 function singleRow(values: string[][], label: string): Record<string, string> {
   const rows = rowsToObjects(values);
   if (rows.length !== 1) throw new Error(`${label}_NOT_SINGLETON`);
   return rows[0];
+}
+
+function singleMatch(rows: Record<string, string>[], predicate: (row: Record<string, string>) => boolean, label: string): Record<string, string> {
+  const matches = rows.filter(predicate);
+  if (matches.length !== 1) throw new Error(`${label}_NOT_SINGLETON`);
+  return matches[0];
 }
 
 function instanceId(rule: string): string {
@@ -122,38 +137,95 @@ const READERS_BY_DATASET: Readonly<Record<string, readonly string[]>> = {
   FX_POLICY_EVIDENCE_LOG: ["COLLECTOR", "READER"],
   FX_POLICY_MARKET_STATE: ["COLLECTOR", "READER"],
   FX_POLICY_RUN_LOG: ["COLLECTOR", "READER", "US_Japan_FX_Policy_Workflow"],
+  RW_COMPANY_REGISTRY: ["Rolling_Wedge_Workflow", "MONITOR", "REVISER", "VALUATOR", "DECISION"],
   RW_CURRENT_STATE: ["Rolling_Wedge_Workflow", "MONITOR", "REVISER", "VALUATOR", "DECISION"],
-  RW_EVIDENCE_HISTORY: ["Rolling_Wedge_Workflow", "REVISER"],
+  RW_EVIDENCE_HISTORY: ["Rolling_Wedge_Workflow", "MONITOR", "REVISER"],
   RW_REVISION_HISTORY: ["Rolling_Wedge_Workflow", "REVISER"],
   RW_VALUATION_HISTORY: ["Rolling_Wedge_Workflow", "VALUATOR"],
-  RW_RUN_LOG: ["Rolling_Wedge_Workflow", "MONITOR"],
+  RW_RUN_LOG: ["Rolling_Wedge_Workflow", "MONITOR", "REVISER", "VALUATOR", "DECISION"],
 };
 
-function normalizeAccess(writeRows: Record<string, string>[], instanceRows: Record<string, string>[]): ManifestAccessRow[] {
-  const accesses = new Map<string, { datasetId: string; instanceId: string; readers: Set<string>; writers: Set<string>; writeMode: ManifestAccessRow["writeMode"] }>();
+function writeMode(mode: string): ManifestAccessRow["writeMode"] {
+  if (mode === "CONDITIONAL_CURRENT_STATE") return "CURRENT_STATE";
+  if (mode === "GOVERNED_CURRENT") return "GOVERNED_CURRENT";
+  return "APPEND_ONLY";
+}
+
+function fieldScope(requirements: string): ReadonlySet<string> | null {
+  const marker = requirements.split(";").find((part) => part.startsWith("FIELD_SCOPE="));
+  if (!marker || marker === "FIELD_SCOPE=ALL_REGISTERED_FIELDS") return null;
+  const raw = marker.slice("FIELD_SCOPE=".length);
+  if (!raw) throw new Error("FIELD_SCOPE_UNRESOLVED");
+  return new Set(raw.split(",").map((x) => x.trim()).filter(Boolean));
+}
+
+function releasedMigrationFence(state: string): boolean {
+  return state === "RELEASED" || state.startsWith("NOT_APPLICABLE_");
+}
+
+function normalizeAccess(
+  writeRows: Record<string, string>[],
+  readRows: Record<string, string>[],
+  instanceRows: Record<string, string>[],
+): ManifestAccessRow[] {
+  const accesses = new Map<string, {
+    datasetId: string;
+    instanceId: string;
+    logicalMember: string;
+    contractFingerprint: string;
+    physicalContractFingerprint: string | null;
+    readers: Set<string>;
+    writerScopes: WriterScopeProjection[];
+    writeMode: ManifestAccessRow["writeMode"];
+    dynamicInstance: boolean;
+    businessAuthorityState: string;
+  }>();
+
   for (const row of instanceRows) {
-    if (!row.Dataset_ID.startsWith("FX_") && !row.Dataset_ID.startsWith("RW_")) continue;
-    if (row.Dataset_ID === "RW_COMPANY_REGISTRY") continue;
     const iid = instanceId(row.Exact_Resource_Resolution_Rule || row.Instance_Rule || "");
+    const read = singleMatch(
+      readRows,
+      (r) => r.Dataset_ID === row.Dataset_ID && instanceId(r.Instance_Rule) === iid,
+      `READ_PROJECTION:${row.Dataset_ID}:${iid}`,
+    );
+    const dynamic = row.Projection_Mode.includes("REGISTERED_PARENT");
+    const businessState = dynamic
+      ? (row.Presence_Rule.includes("State_Status=ACTIVE") && row.Presence_Rule.includes("Archived=FALSE") ? "ACTIVE" : "UNRESOLVED")
+      : "ACTIVE";
     const key = `${row.Dataset_ID}\u0000${iid}`;
     accesses.set(key, {
       datasetId: row.Dataset_ID,
       instanceId: iid,
+      logicalMember: read.Exact_Member_Or_Resource_Class,
+      contractFingerprint: read.Schema_Contract_Fingerprint,
+      physicalContractFingerprint: read.Schema_Contract_Fingerprint || null,
       readers: new Set(READERS_BY_DATASET[row.Dataset_ID] ?? []),
-      writers: new Set(),
+      writerScopes: [],
       writeMode: "APPEND_ONLY",
+      dynamicInstance: dynamic,
+      businessAuthorityState: businessState,
     });
   }
+
   for (const row of writeRows) {
-    if (row.Dataset_ID === "RW_COMPANY_REGISTRY") continue;
     const iid = instanceId(row.Instance_Rule);
     const key = `${row.Dataset_ID}\u0000${iid}`;
     const access = accesses.get(key);
     if (!access) throw new Error(`WRITE_INSTANCE_NOT_IN_INSTANCE_PROJECTION:${row.Dataset_ID}:${iid}`);
-    access.writers.add(row.Writer_Identity);
-    access.writeMode = row.Operation_Mode === "CONDITIONAL_CURRENT_STATE" ? "CURRENT_STATE" :
-      row.Operation_Mode === "GOVERNED_CURRENT" ? "GOVERNED_CURRENT" : "APPEND_ONLY";
+    if (access.logicalMember !== row.Exact_Member_Or_Resource_Class) {
+      throw new Error(`LOGICAL_MEMBER_PROJECTION_DRIFT:${row.Dataset_ID}:${iid}`);
+    }
+    if (access.contractFingerprint !== row.Schema_Contract_Fingerprint) {
+      throw new Error(`PHYSICAL_CONTRACT_PROJECTION_DRIFT:${row.Dataset_ID}:${iid}`);
+    }
+    access.writerScopes.push({
+      writerId: row.Writer_Identity,
+      operations: new Set([row.Operation_Mode]),
+      fields: fieldScope(row.Gate_Requirements),
+    });
+    access.writeMode = writeMode(row.Operation_Mode);
   }
+
   return [...accesses.values()];
 }
 
@@ -161,45 +233,97 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
   const agents = await reader.readDriveText(AGENTS_FILE_ID);
   const task = parseRegistration(agents, taskId);
 
-  const authority = singleRow(await reader.readSheet(REPOSITORY_CUTOVER_CONTROL_ID, "Authority_Publication", "A1:H5"), "AUTHORITY_PUBLICATION");
-  const snapshot: AuthoritySnapshot = {
-    currentCutoverId: authority.Current_Committed_Cutover_ID,
-    activationEpoch: authority.Current_Activation_Epoch,
-    registrySnapshotId: authority.Registry_Snapshot_ID,
-    manifestSetId: authority.Manifest_Set_ID,
-    gateConfigFingerprint: authority.Gate_Config_Fingerprint,
-    workflowSetFingerprint: authority.Workflow_Set_Fingerprint,
-  };
-  if (snapshot.gateConfigFingerprint !== PINNED_GATE_CONFIG_FINGERPRINT) throw new Error("GATE_CONFIG_FINGERPRINT_DRIFT");
+  const authorityRow = singleRow(
+    await reader.readSheet(REPOSITORY_CUTOVER_CONTROL_ID, "Authority_Publication", "A1:H5"),
+    "AUTHORITY_PUBLICATION",
+  );
 
-  const members = rowsToObjects(await reader.readSheet(REPOSITORY_CUTOVER_CONTROL_ID, "Manifest_Set_Members", "A1:E200"));
-  const manifestMembers = members.filter((r) => r.Manifest_Set_ID === snapshot.manifestSetId && r.Task_ID === taskId && r.Projection_State === "ACTIVE");
+  const cutovers = rowsToObjects(
+    await reader.readSheet(REPOSITORY_CUTOVER_CONTROL_ID, "Cutovers", "A1:AC200"),
+  );
+  const cutover = singleMatch(
+    cutovers,
+    (row) => row.Cutover_ID === authorityRow.Current_Committed_Cutover_ID,
+    "REFERENCED_CUTOVER",
+  );
+
+  const snapshot: AuthoritySnapshot = {
+    authorityScopeFingerprint: authorityRow.Authority_Scope_Fingerprint,
+    currentCutoverId: authorityRow.Current_Committed_Cutover_ID,
+    activationEpoch: authorityRow.Current_Activation_Epoch,
+    registrySnapshotId: authorityRow.Registry_Snapshot_ID,
+    registryFingerprint: cutover.Target_Registry_Fingerprint,
+    manifestSetId: authorityRow.Manifest_Set_ID,
+    gateConfigFingerprint: authorityRow.Gate_Config_Fingerprint,
+    workflowSetFingerprint: authorityRow.Workflow_Set_Fingerprint,
+    referencedCutoverState: cutover.Cutover_State,
+    migrationWriteFenceState: cutover.MIGRATION_WRITE_FENCE_State,
+  };
+
+  if (snapshot.gateConfigFingerprint !== PINNED_GATE_CONFIG_FINGERPRINT) {
+    throw new Error("GATE_CONFIG_FINGERPRINT_DRIFT");
+  }
+
+  const members = rowsToObjects(
+    await reader.readSheet(REPOSITORY_CUTOVER_CONTROL_ID, "Manifest_Set_Members", "A1:E200"),
+  );
+  const manifestMembers = members.filter(
+    (r) => r.Manifest_Set_ID === snapshot.manifestSetId && r.Task_ID === taskId && r.Projection_State === "ACTIVE",
+  );
   if (manifestMembers.length !== 1) throw new Error("CURRENT_MANIFEST_MEMBER_NOT_UNIQUE");
   const member = manifestMembers[0];
   const manifestFileId = member.Manifest_File_ID;
 
-  const metadata = singleRow(await reader.readSheet(manifestFileId, "Manifest_Metadata", "A1:I5"), "MANIFEST_METADATA");
-  if (metadata.Task_ID !== taskId || metadata.Manifest_State !== "ACTIVE") throw new Error("MANIFEST_IDENTITY_OR_STATE_MISMATCH");
+  const metadata = singleRow(
+    await reader.readSheet(manifestFileId, "Manifest_Metadata", "A1:I5"),
+    "MANIFEST_METADATA",
+  );
+  if (metadata.Task_ID !== taskId || metadata.Manifest_State !== "ACTIVE") {
+    throw new Error("MANIFEST_IDENTITY_OR_STATE_MISMATCH");
+  }
   if (metadata.Registry_Snapshot_ID !== snapshot.registrySnapshotId || metadata.Manifest_Set_ID !== snapshot.manifestSetId) {
     throw new Error("MANIFEST_AUTHORITY_MISMATCH");
   }
-  if (metadata.Manifest_Fingerprint !== member.Manifest_Fingerprint) throw new Error("MANIFEST_FINGERPRINT_MISMATCH");
+  if (metadata.Registry_Fingerprint !== snapshot.registryFingerprint) {
+    throw new Error("MANIFEST_REGISTRY_FINGERPRINT_MISMATCH");
+  }
+  if (metadata.Manifest_Fingerprint !== member.Manifest_Fingerprint) {
+    throw new Error("MANIFEST_FINGERPRINT_MISMATCH");
+  }
 
-  const writeRows = rowsToObjects(await reader.readSheet(manifestFileId, "Write_Projection", "A1:G200"));
-  const instanceRows = rowsToObjects(await reader.readSheet(manifestFileId, "Instance_Projection", "A1:E200"));
-  const accesses = normalizeAccess(writeRows, instanceRows);
+  const [writeRows, readRows, instanceRows] = await Promise.all([
+    reader.readSheet(manifestFileId, "Write_Projection", "A1:G200").then(rowsToObjects),
+    reader.readSheet(manifestFileId, "Read_Projection", "A1:E200").then(rowsToObjects),
+    reader.readSheet(manifestFileId, "Instance_Projection", "A1:E200").then(rowsToObjects),
+  ]);
+  const accesses = normalizeAccess(writeRows, readRows, instanceRows);
 
   const [workflowText, runtimeProfileText] = await Promise.all([
     reader.readDriveText(task.workflowFileId),
     reader.readDriveText(task.runtimeProfileFileId),
   ]);
   const roleTexts: Record<string, string> = {};
-  for (const [role, fileId] of Object.entries(task.roleFileIds)) roleTexts[role] = await reader.readDriveText(fileId);
-  const companiesBaselineText = task.companiesBaselineFileId ? await reader.readDriveText(task.companiesBaselineFileId) : undefined;
-
-  const projectionDrift = task.agentsManifestProjectionFileId && task.agentsManifestProjectionFileId !== manifestFileId
-    ? { agentsManifestFileId: task.agentsManifestProjectionFileId, authoritativeManifestFileId: manifestFileId }
+  for (const [role, fileId] of Object.entries(task.roleFileIds)) {
+    roleTexts[role] = await reader.readDriveText(fileId);
+  }
+  const companiesBaselineText = task.companiesBaselineFileId
+    ? await reader.readDriveText(task.companiesBaselineFileId)
     : undefined;
+
+  const authorityPublication: AuthorityPublicationProjection = {
+    authorityScopeFingerprint: authorityRow.Authority_Scope_Fingerprint,
+    currentCommittedCutoverId: authorityRow.Current_Committed_Cutover_ID,
+    currentActivationEpoch: authorityRow.Current_Activation_Epoch,
+    registrySnapshotId: authorityRow.Registry_Snapshot_ID,
+    manifestSetId: authorityRow.Manifest_Set_ID,
+    gateConfigFingerprint: authorityRow.Gate_Config_Fingerprint,
+    workflowSetFingerprint: authorityRow.Workflow_Set_Fingerprint,
+  };
+
+  const projectionDrift =
+    task.agentsManifestProjectionFileId && task.agentsManifestProjectionFileId !== manifestFileId
+      ? { agentsManifestFileId: task.agentsManifestProjectionFileId, authoritativeManifestFileId: manifestFileId }
+      : undefined;
 
   return {
     task,
@@ -209,11 +333,34 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
     manifestMetadata: metadata,
     gate: {
       gateLocator: PINNED_GATE_LOCATOR,
+      gateBlob: PINNED_GATE_BLOB,
       gateConfigFingerprint: snapshot.gateConfigFingerprint,
+
+      authorityPublicationState: "EXACT_ONE",
+      authorityPublication,
+      expectedAuthorityScopeFingerprint: cutover.Authority_Scope_Fingerprint,
+      expectedCutoverId: cutover.Cutover_ID,
+      expectedActivationEpoch: cutover.Activation_Epoch,
+      expectedManifestSetId: cutover.Target_Manifest_Set_ID,
+      expectedGateConfigFingerprint: cutover.Persistent_Data_Gate_Config_Fingerprint,
+      expectedWorkflowSetFingerprint: cutover.Target_Workflow_Set_Fingerprint,
+      referencedCutoverState: cutover.Cutover_State,
+
+      currentRegistrySnapshotId: cutover.Target_Registry_Snapshot_ID,
+      currentRegistryFingerprint: cutover.Target_Registry_Fingerprint,
+
+      manifestId: metadata.Manifest_ID,
       taskId,
-      registrySnapshotId: snapshot.registrySnapshotId,
-      manifestSetId: snapshot.manifestSetId,
       manifestState: metadata.Manifest_State,
+      manifestRegistrySnapshotId: metadata.Registry_Snapshot_ID,
+      manifestRegistryFingerprint: metadata.Registry_Fingerprint,
+
+      migrationFenceActive: !releasedMigrationFence(cutover.MIGRATION_WRITE_FENCE_State),
+      pruneFenceIndexAvailable: true,
+      pruneFencedKeys: new Set(),
+      startedPruneKeys: new Set(),
+      archivedIdentityKeys: new Set(),
+
       accesses,
     },
     workflowText,
@@ -229,10 +376,15 @@ export class GoogleExactControlPlaneReader implements ExactControlPlaneReader {
     if (!accessToken) throw new Error("GOOGLE_ACCESS_TOKEN_MISSING");
   }
 
-  private auth(): Record<string, string> { return { Authorization: `Bearer ${this.accessToken}` }; }
+  private auth(): Record<string, string> {
+    return { Authorization: `Bearer ${this.accessToken}` };
+  }
 
   async readDriveText(fileId: string): Promise<string> {
-    const meta = await this.fetchImpl(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,mimeType,name`, { headers: this.auth() });
+    const meta = await this.fetchImpl(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,mimeType,name`,
+      { headers: this.auth() },
+    );
     if (!meta.ok) throw new Error(`DRIVE_METADATA_READ_FAILED:${fileId}:${meta.status}`);
     const m = await meta.json() as { mimeType?: string };
     const url = m.mimeType === "application/vnd.google-apps.document"
@@ -245,7 +397,8 @@ export class GoogleExactControlPlaneReader implements ExactControlPlaneReader {
 
   async readSheet(spreadsheetId: string, sheetName: string, range: string): Promise<string[][]> {
     const a1 = `${sheetName}!${range}`;
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(a1)}?majorDimension=ROWS`;
+    const url =
+      `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(a1)}?majorDimension=ROWS`;
     const r = await this.fetchImpl(url, { headers: this.auth() });
     if (!r.ok) throw new Error(`SHEET_READ_FAILED:${spreadsheetId}:${sheetName}:${r.status}`);
     const body = await r.json() as { values?: string[][] };
