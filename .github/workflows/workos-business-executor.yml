@@ -6,13 +6,19 @@ on:
     - cron: '15 4 * * *'
   workflow_dispatch:
     inputs:
-      task_id:
-        description: Registered Task_ID for READ-only witness
+      witness_mode:
+        description: Explicit non-production witness path
         required: true
+        default: workos_read_only
         type: choice
         options:
-          - US_JAPAN_FX_POLICY
-          - ROLLING_WEDGE_INVESTMENT
+          - workos_read_only
+          - openai_live
+      task_id:
+        description: Registered Task_ID for READ-only WorkOS witness; leave empty for OpenAI witness
+        required: false
+        default: ''
+        type: string
       witness_read_only:
         description: Must remain true before production cutover
         required: true
@@ -37,6 +43,7 @@ concurrency:
     workos-business-executor-${{
       github.event.schedule == '0 2 * * *' && 'US_JAPAN_FX_POLICY' ||
       github.event.schedule == '15 4 * * *' && 'ROLLING_WEDGE_INVESTMENT' ||
+      (github.event_name == 'workflow_dispatch' && inputs.witness_mode == 'openai_live' && 'openai-live-witness') ||
       inputs.task_id || 'validation'
     }}
   cancel-in-progress: false
@@ -61,6 +68,7 @@ jobs:
           if-no-files-found: error
       - run: npm run typecheck
       - run: npm run test:workos-business-executor
+      - run: npx tsx tests/workos_openai_live_witness_validation.ts
 
   execute:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -82,6 +90,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_SCHEDULE: ${{ github.event.schedule }}
+          DISPATCH_MODE: ${{ inputs.witness_mode }}
           DISPATCH_TASK_ID: ${{ inputs.task_id }}
           WITNESS_READ_ONLY: ${{ inputs.witness_read_only }}
           FX_ENABLED: ${{ vars.WORKOS_EXECUTOR_FX_ENABLED }}
@@ -89,6 +98,7 @@ jobs:
         run: |
           set -euo pipefail
           execute=false
+          openai_witness=false
           task_id=""
           if [ "$EVENT_NAME" = "schedule" ]; then
             case "$EVENT_SCHEDULE" in
@@ -102,16 +112,28 @@ jobs:
               echo "Production fence closed for $task_id; skipping candidate production execution."
             fi
           elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            case "$DISPATCH_TASK_ID" in US_JAPAN_FX_POLICY|ROLLING_WEDGE_INVESTMENT) ;; *) exit 21 ;; esac
             [ "$WITNESS_READ_ONLY" = "true" ] || { echo "Witness must be READ-only" >&2; exit 22; }
-            task_id="$DISPATCH_TASK_ID"
-            execute=true
+            case "${DISPATCH_MODE:-workos_read_only}" in
+              workos_read_only)
+                case "$DISPATCH_TASK_ID" in US_JAPAN_FX_POLICY|ROLLING_WEDGE_INVESTMENT) ;; *) exit 21 ;; esac
+                task_id="$DISPATCH_TASK_ID"
+                execute=true
+                ;;
+              openai_live)
+                [ -z "${DISPATCH_TASK_ID:-}" ] || { echo "OpenAI witness must not carry a WorkOS Task_ID" >&2; exit 24; }
+                openai_witness=true
+                ;;
+              *)
+                echo "Unknown witness mode: $DISPATCH_MODE" >&2
+                exit 25
+                ;;
+            esac
           else
             exit 23
           fi
           echo "execute=$execute" >> "$GITHUB_OUTPUT"
+          echo "openai_witness=$openai_witness" >> "$GITHUB_OUTPUT"
           echo "task_id=$task_id" >> "$GITHUB_OUTPUT"
-
       - name: Resolve immutable scheduled occurrence
         id: occurrence
         if: steps.route.outputs.execute == 'true' && github.event_name == 'schedule'
@@ -141,6 +163,16 @@ jobs:
           access_token_scopes: >-
             https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/spreadsheets.readonly
 
+      - name: Execute isolated OpenAI WIF + Responses live witness
+        if: steps.route.outputs.openai_witness == 'true'
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          WORKOS_OPENAI_LIVE_WITNESS: 'true'
+          WORKOS_PRODUCTION_WRITES_ENABLED: 'false'
+          OPENAI_WIF_AUDIENCE: ${{ vars.OPENAI_WIF_AUDIENCE }}
+          OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.OPENAI_IDENTITY_PROVIDER_ID }}
+          OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.OPENAI_SERVICE_ACCOUNT_ID }}
+        run: npx tsx src/workos_openai_live_witness.ts
       - name: Execute registered WorkOS Workflow or READ-only witness
         if: steps.route.outputs.execute == 'true'
         env:
