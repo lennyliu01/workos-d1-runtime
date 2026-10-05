@@ -340,9 +340,9 @@ export async function loadLiveGateContext(
     const registryResource = one(
       resources.filter((row) =>
         row.Dataset_ID === access.datasetId &&
-        row.Source_Instance_ID_Expression === access.instanceId &&
+        row.Instance_Projection_Mode === "D1_REGISTERED_PARENT" &&
         row.Exact_Member_Name === access.logicalMember),
-      `DYNAMIC_RESOURCE:${access.datasetId}:${access.instanceId}`,
+      `DYNAMIC_RESOURCE:${access.datasetId}`,
     );
     businessAuthorityStates.set(
       key(access.datasetId, access.instanceId),
