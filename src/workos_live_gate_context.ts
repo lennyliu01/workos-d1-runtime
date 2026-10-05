@@ -21,7 +21,7 @@ interface LiveContextInput {
 
 export interface LiveGateContext {
   migrationFenceActive: boolean;
-  pruneFenceIndexAvailable: true;
+  pruneFenceIndexAvailable: boolean;
   pruneFencedKeys: ReadonlySet<string>;
   startedPruneKeys: ReadonlySet<string>;
   archivedIdentityKeys: ReadonlySet<string>;
@@ -138,8 +138,11 @@ export async function loadLiveGateContext(reader:ExactControlPlaneReader,input:L
   }
 
   const pruneR=resource(rs,"SYS_ARCHIVE_PRUNE_FENCE_INDEX","Archive_Prune_Fence_Index");
-  const prune=rows(await reader.readSheet(pruneR.Exact_File_ID,"Archive_Prune_Fence_Index","A1:K1000"),
+  const pruneValues=await reader.readSheet(pruneR.Exact_File_ID,"Archive_Prune_Fence_Index","A1:K1000");
+  const prune=rows(pruneValues,
     ["Archive_Unit_ID","Archive_Transaction_ID","Fence_State","Registry_Contract_Fingerprint","Exact_Member_Set_Fingerprint","Exact_K1_Set","Blocked_Dependency_Write_Scope","Affected_Source_Instances","Created_At","Started_At"],"ARCHIVE_PRUNE_FENCE_INDEX");
+  const pruneFenceIndexAvailable=pruneValues.length>=1;
+  if(!pruneFenceIndexAvailable) throw new Error("LIVE_GATE_CONTEXT_UNAVAILABLE:ARCHIVE_PRUNE_FENCE_INDEX");
   const fenced=new Set<string>(),started=new Set<string>();
   if(prune.length){
     const txR=resource(rs,"SYS_ARCHIVE_TRANSACTION_REGISTRY","Archive_Transaction_Registry");
@@ -210,7 +213,7 @@ export async function loadLiveGateContext(reader:ExactControlPlaneReader,input:L
 
   return {
     migrationFenceActive,
-    pruneFenceIndexAvailable:true,
+    pruneFenceIndexAvailable,
     pruneFencedKeys:fenced,
     startedPruneKeys:started,
     archivedIdentityKeys:archived,
@@ -221,7 +224,7 @@ export async function loadLiveGateContext(reader:ExactControlPlaneReader,input:L
       physical:`${input.currentRegistryFileId}:Contract_Fingerprints:${input.currentAcceptanceBindingId}`,
       migration:`${migR.Exact_File_ID}:MIGRATION_WRITE_FENCE:${input.currentCutoverId}`,
       prune:`${pruneR.Exact_File_ID}:Archive_Prune_Fence_Index`,
-      archiveIndex:`${routeR.Exact_File_ID}:${idx.IndexVersion??idx.Index_Version}:${rr.Shard_File_ID}`,
+      archiveIndex:`${routeR.Exact_File_ID}:${idx.Index_Version}:${rr.Shard_File_ID}`,
       businessAuthority:baselineText?"RW_COMPANY_REGISTRY:Companies_Baseline.md":"NOT_APPLICABLE",
     },
   };
