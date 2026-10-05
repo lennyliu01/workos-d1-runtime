@@ -35,8 +35,8 @@ permissions:
 concurrency:
   group: >-
     workos-business-executor-${{
-      github.event.schedule == '0 2 * * *' && 'fx' ||
-      github.event.schedule == '15 4 * * *' && 'rw' ||
+      github.event.schedule == '0 2 * * *' && 'US_JAPAN_FX_POLICY' ||
+      github.event.schedule == '15 4 * * *' && 'ROLLING_WEDGE_INVESTMENT' ||
       inputs.task_id || 'validation'
     }}
   cancel-in-progress: false
