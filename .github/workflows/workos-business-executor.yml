@@ -140,6 +140,5 @@ jobs:
           OPENAI_WIF_AUDIENCE: ${{ vars.OPENAI_WIF_AUDIENCE }}
           OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.OPENAI_IDENTITY_PROVIDER_ID }}
           OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.OPENAI_SERVICE_ACCOUNT_ID }}
-          OPENAI_WIF_TOKEN_EXCHANGE_URL: ${{ vars.OPENAI_WIF_TOKEN_EXCHANGE_URL }}
           RUNTIME_SECRET: ${{ secrets.RUNTIME_SECRET }}
         run: npx tsx src/workos_business_executor.ts
