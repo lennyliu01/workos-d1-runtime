@@ -144,7 +144,7 @@ assert.equal(cp.gate.accesses[0].physicalContractFingerprint,"schema");
 assert.equal(cp.gate.accesses[0].businessAuthorityState,"NOT_APPLICABLE");
 assert.equal(reader.driveReads[0],AGENTS_FILE_ID);
 
-await assert.rejects(()=>loadControlPlane(new FakeReader("pruneUnavailable"),"US_JAPAN_FX_POLICY"),/LIVE_GATE_CONTEXT/);
+await assert.rejects(()=>loadControlPlane(new FakeReader("pruneUnavailable"),"US_JAPAN_FX_POLICY"),/source unavailable/);
 await assert.rejects(()=>loadControlPlane(new FakeReader("physicalDrift"),"US_JAPAN_FX_POLICY"),/MANIFEST_PHYSICAL_CONTRACT/);
 
 const migration=await loadControlPlane(new FakeReader("migrationActive"),"US_JAPAN_FX_POLICY");
