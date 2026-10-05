@@ -14,7 +14,7 @@
     "test:cutover-sequencing": "tsx tests/cutover_provider_config_sequencing_validation.ts",
     "test:workos-business-executor": "tsx tests/workos_control_plane_loader_validation.ts && tsx tests/workos_runtime_client_equivalence_validation.ts && tsx tests/workos_business_executor_validation.ts"
   },
-  "devDependencies": {
+  "dependencies": {\n    "openai": "7.28.0"\n  },\n  "devDependencies": {
     "@types/node": "^22.0.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
