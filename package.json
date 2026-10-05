@@ -2,6 +2,7 @@
   "name": "d1-runtime-prototype",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
@@ -10,9 +11,14 @@
     "test:cutover-postpub": "tsx tests/cutover_post_publication_repair_owner_validation.ts",
     "test:cutover-deployment-config": "tsx tests/cutover_deployment_config_repair_owner_validation.ts",
     "test:cutover-wif": "tsx tests/cutover_wif_contract_validation.ts && tsx tests/cutover_deployment_config_candidate_binding_validation.ts && tsx tests/cutover_provider_config_sequencing_validation.ts",
-    "test:cutover-sequencing": "tsx tests/cutover_provider_config_sequencing_validation.ts"
+    "test:cutover-sequencing": "tsx tests/cutover_provider_config_sequencing_validation.ts",
+    "test:workos-business-executor": "tsx tests/workos_control_plane_loader_validation.ts && tsx tests/workos_runtime_client_equivalence_validation.ts && tsx tests/workos_business_executor_validation.ts"
+  },
+  "dependencies": {
+    "openai": "7.28.0"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
     "wrangler": "^4.0.0"

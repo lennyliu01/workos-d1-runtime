@@ -1,0 +1,95 @@
+import { pathToFileURL } from "node:url";
+import { GoogleExactControlPlaneReader, loadControlPlane, type LoadedControlPlane, type SupportedTaskId } from "./workos_control_plane_loader.js";
+import { contextForRole } from "./workos_capability_profiles.js";
+import { authorizePersistence } from "./workos_persistent_gate_projection.js";
+import { createResponsesClientFromWorkloadIdentity, runBoundedWebLookup, runStructuredModelContext, type ResponsesClient, type RoleResult, type WorkflowStep } from "./workos_model_runtime.js";
+import { invokePersistence, type PersistenceReadRequest, type PersistenceWriteRequest } from "./runtime_invocation_client.js";
+
+export const FX_CRON="0 2 * * *", RW_CRON="15 4 * * *";
+const ROLES:Record<SupportedTaskId,readonly string[]>={US_JAPAN_FX_POLICY:["COLLECTOR","READER"],ROLLING_WEDGE_INVESTMENT:["MONITOR","REVISER","VALUATOR","DECISION"]};
+export function taskForCron(c:string):SupportedTaskId{if(c===FX_CRON)return"US_JAPAN_FX_POLICY";if(c===RW_CRON)return"ROLLING_WEDGE_INVESTMENT";throw new Error(`UNKNOWN_SCHEDULE:${c}`)}
+export function isProductionFenceEnabled(t:SupportedTaskId,e:Record<string,string|undefined>){return e[t==="US_JAPAN_FX_POLICY"?"WORKOS_EXECUTOR_FX_ENABLED":"WORKOS_EXECUTOR_RW_ENABLED"]==="true"}
+export function deterministicCycleId(t:SupportedTaskId,o:string){if(!o)throw new Error("SCHEDULED_OCCURRENCE_MISSING");return`${t}:${o}`}
+export function validateWorkflowTransition(t:SupportedTaskId,s:any){if(!s||!["DISPATCH_ROLE","STOP","BLOCKED"].includes(s.kind))throw new Error("UNKNOWN_WORKFLOW_TRANSITION");if(s.kind==="DISPATCH_ROLE"&&!ROLES[t].includes(s.role))throw new Error(`UNREGISTERED_ROLE_DISPATCH:${t}:${s.role}`);if(s.kind!=="DISPATCH_ROLE"&&s.role!==null&&s.role!==undefined)throw new Error("TERMINAL_WORKFLOW_ROLE_MUST_BE_NULL")}
+export function validateRoleReturn(r:any){if(!r||r.kind!=="ROLE_RESULT"||r.return_target!=="WORKFLOW")throw new Error("DIRECT_ROLE_TO_ROLE_DENIED")}
+const stable=(v:any):string=>Array.isArray(v)?`[${v.map(stable)}]`:v&&typeof v==="object"?`{${Object.entries(v).sort(([a],[b])=>a.localeCompare(b)).map(([k,x])=>`${JSON.stringify(k)}:${stable(x)}`).join(",")}}`:JSON.stringify(v);
+export function gateEntry(cp: Pick<LoadedControlPlane,"gate">, datasetId:string, instanceId:string){
+  const matches=cp.gate.accesses.filter((x)=>x.datasetId===datasetId&&x.instanceId===instanceId);
+  if(matches.length!==1) throw new Error("DATASET_INSTANCE_NOT_REGISTERED");
+  return matches[0];
+}
+function exactWriteOperation(entry:ReturnType<typeof gateEntry>,caller:string):string|undefined{
+  const scope=entry.writerScopes.find((x)=>x.writerId===caller);
+  return scope ? [...scope.operations][0] : undefined;
+}
+function stringSet(v:unknown):ReadonlySet<string>{
+  if(!Array.isArray(v)||v.some((x)=>typeof x!=="string")) throw new Error("TOOL_ARGUMENT_INVALID:fields");
+  return new Set(v as string[]);
+}
+function optionalString(v:unknown):string|null{
+  if(v===null||v===undefined) return null;
+  if(typeof v!=="string"||!v) throw new Error("TOOL_ARGUMENT_INVALID:logical_k1");
+  return v;
+}
+export async function invokeWriteWithFinality(
+  cp:Pick<LoadedControlPlane,"gate">,
+  w:PersistenceWriteRequest,
+  secret:string,
+  f:typeof fetch=fetch,
+  gateMeta:{fields?:ReadonlySet<string>;logicalK1?:string|null}={},
+):Promise<Record<string,unknown>>{
+  const a=gateEntry(cp,w.dataset_id,w.instance_id);
+  authorizePersistence(cp.gate,{
+    taskId:w.task_id,callerIdentity:w.caller_identity,manifestId:cp.gate.manifestId,
+    datasetId:w.dataset_id,instanceId:w.instance_id,logicalMember:a.logicalMember,operation:"WRITE",
+    writeOperation:exactWriteOperation(a,w.caller_identity),fields:gateMeta.fields??new Set<string>(),logicalK1:gateMeta.logicalK1??null,
+  });
+  try{return(await invokePersistence(w,secret,f)).response}catch(err){
+    const sel=w.record_key?{kind:"RECORD" as const,record_key:w.record_key}:a.writeMode!=="APPEND_ONLY"?{kind:"CURRENT" as const}:null;
+    if(!sel)throw new Error(`AMBIGUOUS_WRITE_WITHOUT_FINALITY_KEY:${err}`);
+    authorizePersistence(cp.gate,{
+      taskId:w.task_id,callerIdentity:w.caller_identity,manifestId:cp.gate.manifestId,
+      datasetId:w.dataset_id,instanceId:w.instance_id,logicalMember:a.logicalMember,operation:"READ",logicalK1:gateMeta.logicalK1??null,
+    });
+    const rr:PersistenceReadRequest={execution_surface:w.execution_surface,trigger_mode:w.trigger_mode,task_id:w.task_id,caller_identity:w.caller_identity,operation:"READ",dataset_id:w.dataset_id,instance_id:w.instance_id,selector:sel};
+    const rb=await invokePersistence(rr,secret,f);
+    if(rb.response.status==="FAILED"&&rb.response.error==="NOT_FOUND")return(await invokePersistence(w,secret,f)).response;
+    if(rb.response.status!=="SUCCESS")throw new Error("AMBIGUOUS_WRITE_FINALITY_UNRESOLVED");
+    const x:any=rb.response,o=x.record?.payload??x.current?.payload??x.payload??x.record??x.current;
+    if(stable(o)!==stable(w.payload))throw new Error("AMBIGUOUS_WRITE_FINALITY_MISMATCH");
+    return{...rb.response,recovered_from_finality:true};
+  }
+}
+function s(a:Record<string,unknown>,k:string){const v=a[k];if(typeof v!=="string"||!v)throw new Error(`TOOL_ARGUMENT_INVALID:${k}`);return v}
+function selector(a:Record<string,unknown>):PersistenceReadRequest["selector"]{const k=s(a,"selector_kind");if(k==="CURRENT")return{kind:k};if(k==="RECORD")return{kind:k,record_key:s(a,"record_key")};const l=Number(a.limit);if(!Number.isInteger(l)||l<1||l>100)throw new Error("TOOL_ARGUMENT_INVALID:limit");if(k==="TAIL")return{kind:k,limit:l};if(k==="AFTER")return{kind:k,checkpoint_record_key:s(a,"checkpoint_record_key"),limit:l};throw new Error("TOOL_ARGUMENT_INVALID:selector_kind")}
+function tools(cp:LoadedControlPlane,t:SupportedTaskId,caller:string,cycle:string,writes:boolean,secret:string,client:ResponsesClient,f:typeof fetch){return{
+  workosRead:async(a:Record<string,unknown>)=>{
+    const d=s(a,"dataset_id"),i=s(a,"instance_id"),entry=gateEntry(cp,d,i),logicalK1=optionalString(a.logical_k1);
+    authorizePersistence(cp.gate,{taskId:t,callerIdentity:caller,manifestId:cp.gate.manifestId,datasetId:d,instanceId:i,logicalMember:entry.logicalMember,operation:"READ",logicalK1});
+    return(await invokePersistence({execution_surface:"WORK",trigger_mode:"SCHEDULE",task_id:t,caller_identity:caller,operation:"READ",dataset_id:d,instance_id:i,selector:selector(a)},secret,f)).response;
+  },
+  workosWrite:async(a:Record<string,unknown>)=>{
+    if(!writes)throw new Error("BUSINESS_WRITES_DISABLED");
+    const d=s(a,"dataset_id"),i=s(a,"instance_id"),id=s(a,"logical_output_id"),fields=stringSet(a.fields),logicalK1=optionalString(a.logical_k1);
+    let p:any;try{p=JSON.parse(s(a,"payload_json"))}catch{throw new Error("TOOL_ARGUMENT_INVALID:payload_json")}
+    const key=`${cycle}.${caller}.${id}`;if(key.length>128||!/^[A-Za-z0-9._:-]+$/.test(key))throw new Error("DERIVED_IDEMPOTENCY_KEY_INVALID");
+    const w:any={execution_surface:"WORK",trigger_mode:"SCHEDULE",task_id:t,caller_identity:caller,operation:"WRITE",dataset_id:d,instance_id:i,idempotency_key:key,payload:p};
+    if(typeof a.record_key==="string"&&a.record_key)w.record_key=a.record_key;
+    if(a.expected_version!==null&&a.expected_version!==undefined)w.expected_version=Number(a.expected_version);
+    return invokeWriteWithFinality(cp,w,secret,f,{fields,logicalK1});
+  },
+  marketQuote:(a:Record<string,unknown>)=>runBoundedWebLookup(client,{purpose:"MARKET_QUOTE",query:a}),
+  sourceVerify:(a:Record<string,unknown>)=>runBoundedWebLookup(client,{purpose:"SOURCE_VERIFY",query:a})
+}}
+async function workflow(cp:LoadedControlPlane,t:SupportedTaskId,cycle:string,secret:string,client:ResponsesClient,f:typeof fetch){let input:any={cycle_id:cycle,authority:cp.authority,manifest_fingerprint:cp.manifestFingerprint,companies_baseline:cp.companiesBaselineText};for(let n=0;n<32;n++){const caller=cp.task.workflowName,step=await runStructuredModelContext(client,{context:contextForRole(t,"WORKFLOW"),taskId:t,callerIdentity:caller,instructionText:cp.workflowText,runtimeProfileText:cp.runtimeProfileText,input,kind:"WORKFLOW"},tools(cp,t,caller,cycle,true,secret,client,f)) as WorkflowStep;validateWorkflowTransition(t,step);if(step.kind!=="DISPATCH_ROLE")return{task_id:t,cycle_id:cycle,terminal:step.kind,reason:step.reason,payload:step.payload};const role=step.role!,spec=cp.roleTexts[role];if(!spec)throw new Error(`REGISTERED_ROLE_SPEC_MISSING:${role}`);const rr=await runStructuredModelContext(client,{context:contextForRole(t,role),taskId:t,callerIdentity:role,instructionText:spec,runtimeProfileText:cp.runtimeProfileText,input:{cycle_id:cycle,workflow_payload:step.payload},kind:"ROLE"},tools(cp,t,role,cycle,true,secret,client,f)) as RoleResult;validateRoleReturn(rr);input={cycle_id:cycle,prior_role:role,role_result:rr}}throw new Error("WORKFLOW_TRANSITION_LIMIT")}
+async function witness(cp:LoadedControlPlane,t:SupportedTaskId,secret:string,f:typeof fetch){
+  const caller=cp.task.workflowName,p=t==="US_JAPAN_FX_POLICY"?["FX_POLICY_RUN_LOG"]:["RW_CURRENT_STATE","RW_RUN_LOG"];
+  const a=p.map(d=>cp.gate.accesses.find(x=>x.datasetId===d&&x.readers.has(caller))).find(Boolean);
+  if(!a)throw new Error("WITNESS_READ_TARGET_NOT_AUTHORIZED");
+  authorizePersistence(cp.gate,{taskId:t,callerIdentity:caller,manifestId:cp.gate.manifestId,datasetId:a.datasetId,instanceId:a.instanceId,logicalMember:a.logicalMember,operation:"READ"});
+  const rr:any={execution_surface:"WORK",trigger_mode:"SCHEDULE",task_id:t,caller_identity:caller,operation:"READ",dataset_id:a.datasetId,instance_id:a.instanceId,selector:a.datasetId.endsWith("CURRENT_STATE")?{kind:"CURRENT"}:{kind:"TAIL",limit:1}};
+  return{status:"SUCCESS",witness:"READ_ONLY",result:(await invokePersistence(rr,secret,f)).response}
+}
+export async function runExecutor(env:Record<string,string|undefined>,f:typeof fetch=fetch){const event=env.GITHUB_EVENT_NAME;let t:SupportedTaskId,w=false;if(event==="schedule"){t=taskForCron(env.GITHUB_EVENT_SCHEDULE??"");if(!isProductionFenceEnabled(t,env))return{status:"SKIPPED_FENCE_CLOSED",task_id:t}}else if(event==="workflow_dispatch"){const x=env.WORKOS_TASK_ID;if(x!=="US_JAPAN_FX_POLICY"&&x!=="ROLLING_WEDGE_INVESTMENT")throw new Error("UNKNOWN_DISPATCH_TASK");t=x;if(env.WORKOS_WITNESS_READ_ONLY!=="true"||env.WORKOS_PRODUCTION_WRITES_ENABLED==="true")throw new Error("WORKFLOW_DISPATCH_MUST_BE_READ_ONLY");w=true}else throw new Error("UNSUPPORTED_EXECUTOR_EVENT");const g=env.GOOGLE_OAUTH_ACCESS_TOKEN;if(!g)throw new Error("GOOGLE_ACCESS_TOKEN_MISSING");const secret=env.RUNTIME_SECRET;if(!secret)throw new Error("RUNTIME_SECRET_MISSING");const cp=await loadControlPlane(new GoogleExactControlPlaneReader(g,f),t);if(cp.projectionDrift)throw new Error("AGENTS_MANIFEST_PROJECTION_DRIFT");if(w)return witness(cp,t,secret,f);const cycle=deterministicCycleId(t,env.WORKOS_SCHEDULED_OCCURRENCE??"");return workflow(cp,t,cycle,secret,createResponsesClientFromWorkloadIdentity(env,f),f)}
+async function cli(){console.log(JSON.stringify(await runExecutor(process.env)))}
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)cli().catch(e=>{console.error(e);process.exitCode=1});
