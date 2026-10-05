@@ -7,6 +7,7 @@ import {
   type ManifestAccessRow,
   type WriterScopeProjection,
 } from "./workos_persistent_gate_projection.js";
+import { loadLiveGateContext } from "./workos_live_gate_context.js";
 
 export const AGENTS_FILE_ID = "1vLsNv3YZK-dAJh7jln7KbGLfWzp2k3ec";
 export const REPOSITORY_CUTOVER_CONTROL_ID = "1Ckqy598EPE9CO3gejn2b0sLC3IC1_FcwScRFPE2JumM";
@@ -39,6 +40,8 @@ export interface AuthoritySnapshot {
   workflowSetFingerprint: string;
   referencedCutoverState: string;
   migrationWriteFenceState: string;
+  registryFileId: string;
+  acceptanceBindingId: string;
 }
 
 export interface LoadedControlPlane {
@@ -159,10 +162,6 @@ function fieldScope(requirements: string): ReadonlySet<string> | null {
   return new Set(raw.split(",").map((x) => x.trim()).filter(Boolean));
 }
 
-function releasedMigrationFence(state: string): boolean {
-  return state === "RELEASED" || state.startsWith("NOT_APPLICABLE_");
-}
-
 function normalizeAccess(
   writeRows: Record<string, string>[],
   readRows: Record<string, string>[],
@@ -189,21 +188,18 @@ function normalizeAccess(
       `READ_PROJECTION:${row.Dataset_ID}:${iid}`,
     );
     const dynamic = row.Projection_Mode.includes("REGISTERED_PARENT");
-    const businessState = dynamic
-      ? (row.Presence_Rule.includes("State_Status=ACTIVE") && row.Presence_Rule.includes("Archived=FALSE") ? "ACTIVE" : "UNRESOLVED")
-      : "ACTIVE";
     const key = `${row.Dataset_ID}\u0000${iid}`;
     accesses.set(key, {
       datasetId: row.Dataset_ID,
       instanceId: iid,
       logicalMember: read.Exact_Member_Or_Resource_Class,
       contractFingerprint: read.Schema_Contract_Fingerprint,
-      physicalContractFingerprint: read.Schema_Contract_Fingerprint || null,
+      physicalContractFingerprint: null,
       readers: new Set(READERS_BY_DATASET[row.Dataset_ID] ?? []),
       writerScopes: [],
       writeMode: "APPEND_ONLY",
       dynamicInstance: dynamic,
-      businessAuthorityState: businessState,
+      businessAuthorityState: dynamic ? "PENDING" : "ACTIVE",
     });
   }
 
@@ -258,7 +254,12 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
     workflowSetFingerprint: authorityRow.Workflow_Set_Fingerprint,
     referencedCutoverState: cutover.Cutover_State,
     migrationWriteFenceState: cutover.MIGRATION_WRITE_FENCE_State,
+    registryFileId: cutover.Target_Registry_File_ID,
+    acceptanceBindingId: cutover.Target_Acceptance_Binding_ID,
   };
+  if (!snapshot.registryFileId || !snapshot.acceptanceBindingId) {
+    throw new Error("AUTHORITY_LIVE_GATE_BINDING_MISSING");
+  }
 
   if (snapshot.gateConfigFingerprint !== PINNED_GATE_CONFIG_FINGERPRINT) {
     throw new Error("GATE_CONFIG_FINGERPRINT_DRIFT");
@@ -296,7 +297,27 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
     reader.readSheet(manifestFileId, "Read_Projection", "A1:E200").then(rowsToObjects),
     reader.readSheet(manifestFileId, "Instance_Projection", "A1:E200").then(rowsToObjects),
   ]);
-  const accesses = normalizeAccess(writeRows, readRows, instanceRows);
+  const projectedAccesses = normalizeAccess(writeRows, readRows, instanceRows);
+  const liveGate = await loadLiveGateContext(reader, {
+    taskId,
+    currentCutoverId: snapshot.currentCutoverId,
+    currentRegistryFileId: snapshot.registryFileId,
+    currentRegistrySnapshotId: snapshot.registrySnapshotId,
+    currentRegistryFingerprint: snapshot.registryFingerprint,
+    currentAcceptanceBindingId: snapshot.acceptanceBindingId,
+    accesses: projectedAccesses,
+  });
+  const accesses: ManifestAccessRow[] = projectedAccesses.map((access) => {
+    const physical = liveGate.physicalContractFingerprints.get(access.datasetId);
+    if (!physical) throw new Error(`LIVE_GATE_CONTEXT_UNAVAILABLE:PHYSICAL_CONTRACT:${access.datasetId}`);
+    const authority = liveGate.businessAuthorityStates.get(`${access.datasetId}\u0000${access.instanceId}`);
+    if (!authority) throw new Error(`LIVE_GATE_CONTEXT_UNAVAILABLE:BUSINESS_AUTHORITY:${access.datasetId}:${access.instanceId}`);
+    return {
+      ...access,
+      physicalContractFingerprint: physical,
+      businessAuthorityState: authority,
+    };
+  });
 
   const [workflowText, runtimeProfileText] = await Promise.all([
     reader.readDriveText(task.workflowFileId),
@@ -355,11 +376,11 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
       manifestRegistrySnapshotId: metadata.Registry_Snapshot_ID,
       manifestRegistryFingerprint: metadata.Registry_Fingerprint,
 
-      migrationFenceActive: !releasedMigrationFence(cutover.MIGRATION_WRITE_FENCE_State),
-      pruneFenceIndexAvailable: true,
-      pruneFencedKeys: new Set(),
-      startedPruneKeys: new Set(),
-      archivedIdentityKeys: new Set(),
+      migrationFenceActive: liveGate.migrationFenceActive,
+      pruneFenceIndexAvailable: liveGate.pruneFenceIndexAvailable,
+      pruneFencedKeys: liveGate.pruneFencedKeys,
+      startedPruneKeys: liveGate.startedPruneKeys,
+      archivedIdentityKeys: liveGate.archivedIdentityKeys,
 
       accesses,
     },
