@@ -10,10 +10,11 @@ import {
 const workflow = await readFile(".github/workflows/workos-business-executor.yml", "utf8");
 const witnessSource = await readFile("src/workos_openai_live_witness.ts", "utf8");
 
-assert.equal((workflow.match(/- cron: '0 2 \* \* \*'/g) ?? []).length, 1);
-assert.equal((workflow.match(/- cron: '15 4 \* \* \*'/g) ?? []).length, 1);
-assert.match(workflow, /WORKOS_EXECUTOR_FX_ENABLED/);
-assert.match(workflow, /WORKOS_EXECUTOR_RW_ENABLED/);
+assert.equal((workflow.match(/- cron: '0 2 \* \* \*'/g) ?? []).length, 0);
+assert.equal((workflow.match(/- cron: '15 4 \* \* \*'/g) ?? []).length, 0);
+assert.doesNotMatch(workflow, /^\s*schedule:/m);
+assert.doesNotMatch(workflow, /WORKOS_EXECUTOR_FX_ENABLED/);
+assert.doesNotMatch(workflow, /WORKOS_EXECUTOR_RW_ENABLED/);
 assert.match(workflow, /witness_mode:/);
 assert.match(workflow, /- openai_live/);
 assert.match(workflow, /openai_witness=true/);
