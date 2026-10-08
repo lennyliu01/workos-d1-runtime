@@ -42,8 +42,8 @@ assert.equal(capabilitiesFor("RW_WORKFLOW").has("market_quote"), true);
 
 const workflowYaml = await readFile(".github/workflows/workos-business-executor.yml", "utf8");
 assert.match(workflowYaml, /workos-business-executor-\$\{\{/);
-assert.match(workflowYaml, /'US_JAPAN_FX_POLICY'/);
-assert.match(workflowYaml, /'ROLLING_WEDGE_INVESTMENT'/);
+assert.match(workflowYaml, /US_JAPAN_FX_POLICY/);
+assert.match(workflowYaml, /ROLLING_WEDGE_INVESTMENT/);
 assert.match(workflowYaml, /github\.event_name == 'workflow_dispatch'/);
 assert.match(workflowYaml, /witness_mode:/);
 assert.match(workflowYaml, /WORKOS_WITNESS_READ_ONLY: 'true'/);
