@@ -42,14 +42,20 @@ assert.equal(capabilitiesFor("RW_WORKFLOW").has("market_quote"), true);
 
 const workflowYaml = await readFile(".github/workflows/workos-business-executor.yml", "utf8");
 assert.match(workflowYaml, /workos-business-executor-\$\{\{/);
-assert.match(workflowYaml, /'US_JAPAN_FX_POLICY'/);
-assert.match(workflowYaml, /'ROLLING_WEDGE_INVESTMENT'/);
-assert.match(workflowYaml, /actions\/runs\/\$RUN_ID/);
-assert.match(workflowYaml, /RUN_ID: \$\{\{ github\.run_id \}\}/);
-assert.match(workflowYaml, /WORKOS_SCHEDULE_OCCURRENCE_CLI=true/);
-assert.match(workflowYaml, /WORKOS_SCHEDULED_OCCURRENCE: \$\{\{ steps\.occurrence\.outputs\.occurrence \}\}/);
-assert.doesNotMatch(workflowYaml, /TZ=Asia\/Tokyo date/);
-assert.doesNotMatch(workflowYaml, /github\.run_attempt/);
+assert.match(workflowYaml, /US_JAPAN_FX_POLICY/);
+assert.match(workflowYaml, /ROLLING_WEDGE_INVESTMENT/);
+assert.match(workflowYaml, /github\.event_name == 'workflow_dispatch'/);
+assert.match(workflowYaml, /witness_mode:/);
+assert.match(workflowYaml, /WORKOS_WITNESS_READ_ONLY: 'true'/);
+assert.match(workflowYaml, /WORKOS_PRODUCTION_WRITES_ENABLED: 'false'/);
+assert.doesNotMatch(workflowYaml, /^\s*schedule:/m);
+assert.doesNotMatch(workflowYaml, /0 2 \* \* \*/);
+assert.doesNotMatch(workflowYaml, /15 4 \* \* \*/);
+assert.doesNotMatch(workflowYaml, /github\.event\.schedule/);
+assert.doesNotMatch(workflowYaml, /WORKOS_EXECUTOR_FX_ENABLED/);
+assert.doesNotMatch(workflowYaml, /WORKOS_EXECUTOR_RW_ENABLED/);
+assert.doesNotMatch(workflowYaml, /WORKOS_SCHEDULE_OCCURRENCE_CLI/);
+assert.doesNotMatch(workflowYaml, /WORKOS_SCHEDULED_OCCURRENCE/);
 assert.doesNotMatch(workflowYaml, /OPENAI_WIF_TOKEN_EXCHANGE_URL/);
 
 const sdkEnv = {
