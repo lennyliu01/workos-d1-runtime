@@ -98,6 +98,19 @@ assert.throws(()=>authorizePersistence({...snapshot,expectedActivationEpoch:"E10
 // Manual initializer remains disabled until trusted live grant is loaded.
 const cp={task:{taskId:"ROLLING_WEDGE_INVESTMENT"},gate:{...snapshot,bootstrapGrants:undefined}};
 await assert.rejects(()=>initializeBaselineWithReadback(cp as any,"DSG",payload("DSG"),"secret",fetch),/BOOTSTRAP_GRANT_OR_FIELDS_MISMATCH/);checks++;
+// Integration: the only supported path is accepted projection Gate -> Worker -> D1 -> readback.
+const boundFetch=(async(_input:RequestInfo|URL, init?:RequestInit)=>{
+ return handleWorkOsCandidatePersistence(
+   new Request("https://isolated.invalid/candidate/workos-persistence",init),
+   isolated
+ );
+}) as typeof fetch;
+const cpBound={task:{taskId:"ROLLING_WEDGE_INVESTMENT"},gate:snapshot};
+const integrated=await initializeBaselineWithReadback(cpBound as any,"DSG",payload("DSG"),"test-isolated-secret",boundFetch);
+assert.equal(integrated.write.version,1);
+assert.deepEqual(integrated.readback.payload,payload("DSG"));
+assert.equal(dbRecords.size,10);checks+=3;
+await assert.rejects(()=>initializeBaselineWithReadback({task:{taskId:"ROLLING_WEDGE_INVESTMENT"},gate:{...snapshot,bootstrapGrants:new Map()}} as any,"DSG",payload("DSG"),"test-isolated-secret",boundFetch),/BOOTSTRAP_GRANT_OR_FIELDS_MISMATCH/);checks++;
 // New control projection is read only from the ACTIVE manifest exact source.
 const grantHeader=["Task_ID","Manifest_ID","Manifest_Fingerprint","Authority_Epoch",
  "Dataset_ID","Instance_ID","Logical_Member","Writer_ID","Reader_ID",
