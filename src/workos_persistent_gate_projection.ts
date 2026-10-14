@@ -35,6 +35,21 @@ export interface ManifestAccessRow {
   businessAuthorityState: string;
 }
 
+export interface BootstrapGrantProjection {
+  taskId: string;
+  manifestId: string;
+  manifestFingerprint: string;
+  authorityEpoch: string;
+  datasetId: string;
+  instanceId: string;
+  logicalMember: string;
+  writerId: string;
+  readerId: string;
+  fields: ReadonlySet<string>;
+  idempotencyKey: string;
+  state: "ACTIVE" | "DISABLED";
+}
+
 export interface GateProjectionSnapshot {
   gateLocator: string;
   gateBlob: string;
@@ -56,6 +71,9 @@ export interface GateProjectionSnapshot {
   manifestId: string;
   taskId: string;
   manifestState: string;
+  manifestFingerprint?: string;
+  /** Only populated from a verified, publisher-owned authority control projection. */
+  bootstrapGrants?: ReadonlyMap<string, BootstrapGrantProjection>;
   manifestRegistrySnapshotId: string;
   manifestRegistryFingerprint: string;
 
@@ -79,6 +97,9 @@ export interface PersistenceAuthorizationRequest {
   writeOperation?: string;
   fields?: ReadonlySet<string>;
   logicalK1?: string | null;
+  expectedVersion?: number;
+  idempotencyKey?: string;
+  readPurpose?: string;
 }
 
 function logicalKey(datasetId: string, logicalK1: string): string {
@@ -141,6 +162,41 @@ function findAccess(snapshot: GateProjectionSnapshot, request: PersistenceAuthor
   return matches[0];
 }
 
+
+function draftGrant(snapshot: GateProjectionSnapshot, entry: ManifestAccessRow): BootstrapGrantProjection | null {
+  if (!entry.dynamicInstance || entry.businessAuthorityState !== "DRAFT" ||
+      snapshot.taskId !== "ROLLING_WEDGE_INVESTMENT" || entry.datasetId !== "RW_CURRENT_STATE" ||
+      !snapshot.manifestFingerprint) return null;
+  const grant = snapshot.bootstrapGrants?.get(`${entry.datasetId}\u0000${entry.instanceId}`);
+  if (!grant || grant.state !== "ACTIVE" ||
+      grant.taskId !== snapshot.taskId || grant.manifestId !== snapshot.manifestId ||
+      grant.manifestFingerprint !== snapshot.manifestFingerprint ||
+      grant.authorityEpoch !== snapshot.expectedActivationEpoch ||
+      grant.datasetId !== entry.datasetId || grant.instanceId !== entry.instanceId ||
+      grant.logicalMember !== entry.logicalMember ||
+      grant.writerId !== "Rolling_Wedge_Workflow" || grant.readerId !== "Rolling_Wedge_Workflow" ||
+      !grant.idempotencyKey || grant.fields.size === 0) return null;
+  return grant;
+}
+function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  return a.size === b.size && [...a].every(value => b.has(value));
+}
+function allowDraft(snapshot: GateProjectionSnapshot, entry: ManifestAccessRow, request: PersistenceAuthorizationRequest): boolean {
+  const grant = draftGrant(snapshot, entry);
+  if (!grant || request.callerIdentity !== "Rolling_Wedge_Workflow" ||
+      entry.writeMode !== "CURRENT_STATE" || request.logicalK1) return false;
+  if (request.operation === "READ") {
+    return request.readPurpose === "INITIAL_BASELINE_READBACK" &&
+      request.expectedVersion === 1 && request.idempotencyKey === grant.idempotencyKey;
+  }
+  return request.writeOperation === "INITIAL_BASELINE" && request.expectedVersion === 0 &&
+    request.idempotencyKey === grant.idempotencyKey &&
+    sameSet(request.fields ?? new Set(), grant.fields) &&
+    entry.writerScopes.some(scope => scope.writerId === grant.writerId &&
+      scope.operations.has("INITIAL_BASELINE") &&
+      (scope.fields === null || [...grant.fields].every(field => scope.fields!.has(field))));
+}
+
 export function authorizePersistence(
   snapshot: GateProjectionSnapshot,
   request: PersistenceAuthorizationRequest,
@@ -167,7 +223,8 @@ export function authorizePersistence(
   }
 
   const entry = findAccess(snapshot, request);
-  if (entry.dynamicInstance && entry.businessAuthorityState !== "ACTIVE") {
+  if (entry.dynamicInstance && entry.businessAuthorityState !== "ACTIVE" &&
+      !allowDraft(snapshot, entry, request)) {
     throw new Error(`BUSINESS_AUTHORITY_NOT_READY:${entry.businessAuthorityState}`);
   }
 
