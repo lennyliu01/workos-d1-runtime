@@ -365,6 +365,12 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
     currentRegistrySnapshotId: snapshot.registrySnapshotId,
     currentRegistryFingerprint: snapshot.registryFingerprint,
     currentAcceptanceBindingId: snapshot.acceptanceBindingId,
+    currentCutoverControlFileId: REPOSITORY_CUTOVER_CONTROL_ID,
+    currentCutoverFenceState: cutover.MIGRATION_WRITE_FENCE_State,
+    currentActivationEpoch: snapshot.activationEpoch,
+    currentManifestId: metadata.Manifest_ID,
+    currentManifestFingerprint: metadata.Manifest_Fingerprint,
+    rwNonArchiveControlTab: metadata.RW_Non_Archive_Control_Tab,
     accesses: projectedAccesses,
   });
   const accesses: ManifestAccessRow[] = projectedAccesses.map((access) => {
@@ -441,6 +447,7 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
       manifestRegistryFingerprint: metadata.Registry_Fingerprint,
 
       migrationFenceActive: liveGate.migrationFenceActive,
+      nonArchiveDatasetIds: liveGate.nonArchiveDatasetIds,
       pruneFenceIndexAvailable: liveGate.pruneFenceIndexAvailable,
       pruneFencedKeys: liveGate.pruneFencedKeys,
       startedPruneKeys: liveGate.startedPruneKeys,
