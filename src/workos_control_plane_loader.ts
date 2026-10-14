@@ -256,7 +256,7 @@ export async function loadPublishedBootstrapGrants(
     const fields=r.Allowed_Fields.split(",").map(x=>x.trim()).filter(Boolean);
     if (entry.length!==1 || entry[0].businessAuthorityState!=="DRAFT" ||
         entry[0].writeMode!=="CURRENT_STATE" ||
-        !entry[0].writerScopes.some(x=>x.writerId===r.Writer_ID && x.operations.has("INITIAL_BASELINE")) ||
+        !entry[0].writerScopes.some(x=>x.writerId===r.Writer_ID && x.operations.has("CONDITIONAL_CURRENT_STATE")) ||
         r.Task_ID!=="ROLLING_WEDGE_INVESTMENT" || r.Manifest_ID!==metadata.Manifest_ID ||
         !metadata.Manifest_Fingerprint || r.Manifest_Fingerprint!==metadata.Manifest_Fingerprint ||
         r.Authority_Epoch!==epoch || r.Dataset_ID!=="RW_CURRENT_STATE" ||
