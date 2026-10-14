@@ -29,10 +29,10 @@ type Fault="pruneUnavailable"|"physicalDrift"|"migrationActive"|"pruneStarted"|"
   "rwArchiveEnabled"|"rwControlUnavailable"|"rwCapabilityBad"|"rwFenceActive"|"rwEpochBad";
 class FakeReader implements ExactControlPlaneReader {
   readonly driveReads:string[]=[]; readonly sheetReads:string[]=[];
-  constructor(private readonly fault?:Fault){}
+  constructor(private readonly fault?:Fault, private readonly customBaseline?:string){}
   async readDriveText(id:string){
     this.driveReads.push(id);
-    const map:Record<string,string>={[AGENTS_FILE_ID]:agents,[workflowId]:"workflow",[profileId]:"profile",[collectorId]:"collector",[readerId]:"reader",[BASE]:this.fault==="baselineDraft"?baseline("DRAFT"):baseline()};
+    const map:Record<string,string>={[AGENTS_FILE_ID]:agents,[workflowId]:"workflow",[profileId]:"profile",[collectorId]:"collector",[readerId]:"reader",[BASE]:this.customBaseline??(this.fault==="baselineDraft"?baseline("DRAFT"):baseline())};
     if(!(id in map)) throw new Error(`unexpected drive id ${id}`);
     return map[id];
   }
@@ -244,4 +244,35 @@ assert.throws(()=>authorizePersistence(rwGate,{...rwReadRequest,callerIdentity:"
 assert.throws(()=>authorizePersistence(rwGate,{...rwWriteRequest,callerIdentity:"COLLECTOR"}),
   /WRITE_SCOPE_VIOLATION/);
 
+const companyIDs=["ENPLAS","SERVICENOW","FIGMA","DSG","DOL","WSP","GIBA","NA","ENB","ATD"];
+const renderBaseline=(names:readonly string[])=>[
+  "# Companies Baseline",
+  "This file is the sole authority for `Monitor_Enabled`, `State_Status`, and `Archived`.",
+  ...names.flatMap((id,index)=>[
+    `## ${id}`,
+    "- Monitor_Enabled: `" + (index<3?"TRUE":"FALSE") + "`",
+    "- Archived: `FALSE`",
+    "- State_Status: `" + (index<3?"ACTIVE":"DRAFT") + "`",
+  ]),
+].join("\n");
+const tenAccesses=companyIDs.map(id=>({...rwAccess,instanceId:id}));
+const tenReader=new FakeReader(undefined,renderBaseline(companyIDs));
+const tenGate=await loadLiveGateContext(tenReader,{...rwInput,accesses:tenAccesses});
+assert.equal(tenGate.businessAuthorityStates.size,10);
+for(const [index,id] of companyIDs.entries())
+  assert.equal(tenGate.businessAuthorityStates.get("RW_CURRENT_STATE\u0000"+id),
+    index<3?"ACTIVE":"DRAFT",id);
+assert.equal(tenGate.nonArchiveDatasetIds.size,6);
+assert.equal(tenReader.sheetReads.some(x=>/Archive_Prune|Archive_Transaction|Record_Locators|Acceptance_Results/.test(x)),false);
+const company11="INDEPENDENT_NEW_COMPANY_X";
+const futureAccess={...rwAccess,instanceId:company11};
+const elevenGate=await loadLiveGateContext(
+  new FakeReader(undefined,renderBaseline([...companyIDs,company11])),
+  {...rwInput,accesses:[...tenAccesses,futureAccess]},
+);
+assert.equal(elevenGate.businessAuthorityStates.get("RW_CURRENT_STATE\u0000"+company11),"DRAFT");
+await assert.rejects(()=>loadLiveGateContext(
+  new FakeReader(undefined,renderBaseline(companyIDs)),
+  {...rwInput,accesses:[...tenAccesses,futureAccess]},
+),/COMPANY_AUTHORITY/);
 console.log("workos_control_plane_loader_validation: PASS");
