@@ -31,7 +31,7 @@ interface CandidateEnv {
 interface DatasetControl {
   taskId: TaskId;
   writeMode: WriteMode;
-  instances: ReadonlySet<string>;
+  instances: ReadonlySet<string> | null;
   writers: ReadonlySet<string>;
   readers: ReadonlySet<string>;
   resourceBinding: "DB";
@@ -103,7 +103,6 @@ interface CurrentRow {
 
 const SAFE_TOKEN = /^[A-Za-z0-9._:-]+$/;
 const FX_SINGLETON = new Set(["SINGLETON"]);
-const RW_INSTANCES = new Set(["ENPLAS", "SERVICENOW", "FIGMA"]);
 
 const WORKOS_DATASETS: Record<string, DatasetControl> = {
   FX_POLICY_ANALYSIS_STATE: {
@@ -141,7 +140,7 @@ const WORKOS_DATASETS: Record<string, DatasetControl> = {
   RW_CURRENT_STATE: {
     taskId: "ROLLING_WEDGE_INVESTMENT",
     writeMode: "CURRENT_STATE",
-    instances: RW_INSTANCES,
+    instances: null,
     writers: new Set(["Rolling_Wedge_Workflow"]),
     readers: new Set([
       "Rolling_Wedge_Workflow",
@@ -155,7 +154,7 @@ const WORKOS_DATASETS: Record<string, DatasetControl> = {
   RW_EVIDENCE_HISTORY: {
     taskId: "ROLLING_WEDGE_INVESTMENT",
     writeMode: "APPEND_ONLY",
-    instances: RW_INSTANCES,
+    instances: null,
     writers: new Set(["MONITOR"]),
     readers: new Set(["Rolling_Wedge_Workflow", "REVISER"]),
     resourceBinding: "DB",
@@ -163,7 +162,7 @@ const WORKOS_DATASETS: Record<string, DatasetControl> = {
   RW_REVISION_HISTORY: {
     taskId: "ROLLING_WEDGE_INVESTMENT",
     writeMode: "APPEND_ONLY",
-    instances: RW_INSTANCES,
+    instances: null,
     writers: new Set(["REVISER"]),
     readers: new Set(["Rolling_Wedge_Workflow", "REVISER"]),
     resourceBinding: "DB",
@@ -171,7 +170,7 @@ const WORKOS_DATASETS: Record<string, DatasetControl> = {
   RW_VALUATION_HISTORY: {
     taskId: "ROLLING_WEDGE_INVESTMENT",
     writeMode: "APPEND_ONLY",
-    instances: RW_INSTANCES,
+    instances: null,
     writers: new Set(["VALUATOR"]),
     readers: new Set(["Rolling_Wedge_Workflow", "VALUATOR"]),
     resourceBinding: "DB",
@@ -179,7 +178,7 @@ const WORKOS_DATASETS: Record<string, DatasetControl> = {
   RW_RUN_LOG: {
     taskId: "ROLLING_WEDGE_INVESTMENT",
     writeMode: "APPEND_ONLY",
-    instances: RW_INSTANCES,
+    instances: null,
     writers: new Set([
       "MONITOR",
       "REVISER",
@@ -299,7 +298,7 @@ function validWrite(body: unknown): body is WriteRequest {
  */
 type TrustedControlPlaneSource = () => Promise<LoadedControlPlane>;
 
-async function dynamicInstanceDecision(
+async function rollingWedgeGateDecision(
   body: ReadRequest | WriteRequest, source: TrustedControlPlaneSource,
 ): Promise<Response | null> {
   let cp: LoadedControlPlane;
@@ -308,16 +307,23 @@ async function dynamicInstanceDecision(
       cp.gate.taskId !== "ROLLING_WEDGE_INVESTMENT")
     return fail("CONTROL_DENIED", 403);
   const snapshot = cp.gate;
-  if (body.authority_epoch !== snapshot.expectedActivationEpoch ||
-      body.manifest_fingerprint !== snapshot.manifestFingerprint)
+  // Omitted legacy bindings are resolved exclusively from this trusted
+  // singleton-selected authority. An explicitly provided value must match.
+  if (!snapshot.expectedActivationEpoch || !snapshot.manifestFingerprint ||
+      (body.authority_epoch !== undefined &&
+       body.authority_epoch !== snapshot.expectedActivationEpoch) ||
+      (body.manifest_fingerprint !== undefined &&
+       body.manifest_fingerprint !== snapshot.manifestFingerprint))
     return fail("AUTHORITY_BINDING_MISMATCH", 403);
   const entries = snapshot.accesses.filter(x =>
     x.datasetId === body.dataset_id && x.instanceId === body.instance_id);
   if (entries.length !== 1) return fail("DATASET_NOT_REGISTERED", 403);
   const entry = entries[0];
   const isDraft = entry.dynamicInstance && entry.businessAuthorityState === "DRAFT";
-  if (!entry.dynamicInstance || (!isDraft && entry.businessAuthorityState !== "ACTIVE"))
+  if (!isDraft && entry.businessAuthorityState !== "ACTIVE")
     return fail("BUSINESS_AUTHORITY_NOT_READY", 403);
+  if (entry.writeMode !== WORKOS_DATASETS[body.dataset_id]?.writeMode)
+    return fail("MANIFEST_OPERATION_MODE_MISMATCH", 403);
   if (isDraft && (body.dataset_id !== "RW_CURRENT_STATE" ||
       (body.operation === "READ" && body.selector.kind !== "CURRENT")))
     return fail("BUSINESS_AUTHORITY_NOT_READY", 403);
@@ -377,11 +383,14 @@ async function resolveControl(
   const control = WORKOS_DATASETS[body.dataset_id];
   if (!control) return fail("DATASET_NOT_REGISTERED", 403);
   if (control.taskId !== body.task_id) return fail("CONTROL_DENIED", 403);
-  if (!control.instances.has(body.instance_id)) {
-    if (control.taskId !== "ROLLING_WEDGE_INVESTMENT") return fail("CONTROL_DENIED",403);
-    const denied = await dynamicInstanceDecision(body, source);
-    if (denied) return denied;
+  if (control.taskId === "ROLLING_WEDGE_INVESTMENT") {
+    // Every RW instance, including the original three, must enter the
+    // trusted Manifest Gate; Worker-local company/caller lists grant nothing.
+    const denied = await rollingWedgeGateDecision(body, source);
+    return denied ?? control;
   }
+  // Unchanged FX singleton and legacy caller behavior.
+  if (!control.instances?.has(body.instance_id)) return fail("CONTROL_DENIED", 403);
   if (body.operation === "READ") {
     if (!control.readers.has(body.caller_identity)) return fail("READ_NOT_AUTHORIZED", 403);
   } else if (!control.writers.has(body.caller_identity)) {

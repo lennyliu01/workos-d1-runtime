@@ -28,6 +28,15 @@ const syntheticGrants=new Map(ids.map(id=>["RW_CURRENT_STATE\u0000"+id,{
  readerId:"Rolling_Wedge_Workflow",fields:new Set(fields),
  idempotencyKey:key(id),state:"ACTIVE" as const,
 }] as const));
+const activeLegacyIds=["ENPLAS","SERVICENOW","FIGMA"] as const;
+const activeLegacyAccesses:ManifestAccessRow[]=activeLegacyIds.map((id,i)=>({
+ datasetId:"RW_CURRENT_STATE",instanceId:id,logicalMember:"RW_CURRENT_STATE",
+ contractFingerprint:"contract",physicalContractFingerprint:"contract",
+ readers:new Set(["Rolling_Wedge_Workflow","MONITOR"]),
+ writerScopes:[{writerId:"Rolling_Wedge_Workflow",
+  operations:new Set(["CONDITIONAL_CURRENT_STATE"]),fields:null}],
+ writeMode:"CURRENT_STATE",dynamicInstance:i!==0,businessAuthorityState:"ACTIVE",
+}));
 const trustedGate:GateProjectionSnapshot={
  gateImplementationId:WORKOS_D1_GATE_IMPLEMENTATION_ID,gateImplementationVersion:WORKOS_D1_GATE_IMPLEMENTATION_VERSION,
  gateConfigFingerprint:ACCEPTED_GATE_CONFIG_FINGERPRINT,
@@ -45,8 +54,15 @@ const trustedGate:GateProjectionSnapshot={
  manifestFingerprint:"MF11",bootstrapGrants:syntheticGrants,
  migrationFenceActive:false,pruneFenceIndexAvailable:true,
  pruneFencedKeys:new Set(),startedPruneKeys:new Set(),
- archivedIdentityKeys:new Set(),accesses:dynamicAccesses,
+ archivedIdentityKeys:new Set(),accesses:[...dynamicAccesses,...activeLegacyAccesses],
 };
+// gateImplementationId is inspected exclusively by authorizePersistence()
+// on the Worker request path. This getter provides entry-level evidence.
+let authorizePersistenceEntries=0;
+Object.defineProperty(trustedGate,"gateImplementationId",{
+ configurable:true,enumerable:true,
+ get(){authorizePersistenceEntries++;return WORKOS_D1_GATE_IMPLEMENTATION_ID;}
+});
 const trustedCp={task:{taskId:"ROLLING_WEDGE_INVESTMENT"},gate:trustedGate};
 const dbRecords=new Map<string,{dataset_id:string;instance_id:string;version:number;previous_version:number;payload_json:string;invocation_id:string;idempotency_key:string;db_written_at:string}>();
 function db() {
@@ -132,11 +148,61 @@ await fail({...read("DSG"),caller_identity:"MONITOR"});checks++;
 await fail({...read("DSG"),expected_version:2});checks++;
 await fail({...read("DSG"),bootstrap_idempotency_key:"wrong"});checks++;
 await fail({...read("DSG"),selector:{kind:"TAIL",limit:1}});checks++;
-// Legacy three-company control remains available with previous request shape.
-for(const id of ["ENPLAS","SERVICENOW","FIGMA"]){
- const req={task_id:"ROLLING_WEDGE_INVESTMENT",caller_identity:"Rolling_Wedge_Workflow",operation:"WRITE",dataset_id:"RW_CURRENT_STATE",instance_id:id,idempotency_key:`LEGACY.${id}`,expected_version:0,payload:{Legacy:true}};
- const result=await send(req);assert.equal(result.status,200,`legacy regression ${id}`);checks++;
+// Legacy request shape: Epoch/Fingerprint absent, resolved from trusted Gate.
+for(const id of activeLegacyIds){
+ const req={task_id:"ROLLING_WEDGE_INVESTMENT",caller_identity:"Rolling_Wedge_Workflow",
+  operation:"WRITE",dataset_id:"RW_CURRENT_STATE",instance_id:id,
+  idempotency_key:`LEGACY.${id}`,expected_version:0,payload:{Legacy:true}};
+ let before=authorizePersistenceEntries;
+ const result=await send(req);
+ assert.equal(result.status,200,`legacy write ${id}: ${JSON.stringify(result.body)}`);
+ assert.ok(authorizePersistenceEntries>before,`${id}: successful WRITE never entered authorizePersistence()`);
+ checks+=2;
+ const readReq={task_id:"ROLLING_WEDGE_INVESTMENT",caller_identity:"MONITOR",
+  operation:"READ",dataset_id:"RW_CURRENT_STATE",instance_id:id,selector:{kind:"CURRENT"}};
+ before=authorizePersistenceEntries;
+ const readResult=await send(readReq);
+ assert.equal(readResult.status,200,`legacy read ${id}: ${JSON.stringify(readResult.body)}`);
+ assert.ok(authorizePersistenceEntries>before,`${id}: successful READ never entered authorizePersistence()`);
+ assert.deepEqual(readResult.body.payload,{Legacy:true});checks+=3;
+ await fail({...req,caller_identity:"MONITOR",idempotency_key:`DENIED.${id}`});checks++;
+ await fail({...readReq,caller_identity:"COLLECTOR"});checks++;
+ await fail({...req,authority_epoch:"E10"});checks++;
+ await fail({...readReq,manifest_fingerprint:"MF10"});checks++;
 }
+// Legacy instances also fail closed if registration or publication loses trust.
+const oldWrite={task_id:"ROLLING_WEDGE_INVESTMENT",caller_identity:"Rolling_Wedge_Workflow",
+ operation:"WRITE",dataset_id:"RW_CURRENT_STATE",instance_id:"ENPLAS",
+ idempotency_key:"LEGACY.ENPLAS.2",expected_version:1,payload:{Legacy:2}};
+const legacyGateCall=async(req:Record<string,unknown>,snapshot:GateProjectionSnapshot)=>{
+ const response=await handleWorkOsCandidatePersistence(
+  new Request("https://isolated.invalid/candidate/workos-persistence",{
+   method:"POST",headers:{Authorization:"Bearer test-isolated-secret"},
+   body:JSON.stringify(req)}),isolated,
+  async()=>({task:{taskId:"ROLLING_WEDGE_INVESTMENT"},gate:snapshot} as any));
+ return response.status;
+};
+for(const badGate of [
+ {...trustedGate,accesses:dynamicAccesses},
+ {...trustedGate,accesses:trustedGate.accesses.map(x=>
+  x.instanceId==="ENPLAS"?{...x,businessAuthorityState:"REVOKED"}:x)},
+ {...trustedGate,expectedActivationEpoch:"E10"},
+ {...trustedGate,authorityPublicationState:"UNAVAILABLE" as const},
+ {...trustedGate,manifestRegistryFingerprint:"wrong"},
+]){
+ assert.equal(await legacyGateCall(oldWrite,badGate),403,"legacy authority/registration bypass");checks++;
+}
+const revokedReadGate={...trustedGate,accesses:trustedGate.accesses.map(x=>
+ x.instanceId==="ENPLAS"?{...x,readers:new Set<string>()}:x)};
+assert.equal(await legacyGateCall({
+ task_id:"ROLLING_WEDGE_INVESTMENT",caller_identity:"MONITOR",operation:"READ",
+ dataset_id:"RW_CURRENT_STATE",instance_id:"ENPLAS",selector:{kind:"CURRENT"}
+},revokedReadGate),403,"empty reader grant bypass");checks++;
+const noLegacySource=await handleWorkOsCandidatePersistence(
+ new Request("https://isolated.invalid/candidate/workos-persistence",{
+  method:"POST",headers:{Authorization:"Bearer test-isolated-secret"},
+  body:JSON.stringify(oldWrite)}),isolated);
+assert.equal(noLegacySource.status,403);checks++;
 // TS gate synthetic accepted snapshot denies DRAFT absent trusted grant, and grants only exact.
 const entry:ManifestAccessRow={datasetId:"RW_CURRENT_STATE",instanceId:"DSG",logicalMember:"RW_CURRENT_STATE",contractFingerprint:"contract",physicalContractFingerprint:"contract",readers:new Set(["Rolling_Wedge_Workflow"]),writerScopes:[{writerId:"Rolling_Wedge_Workflow",operations:new Set(["CONDITIONAL_CURRENT_STATE"]),fields:new Set(fields)}],writeMode:"CURRENT_STATE",dynamicInstance:true,businessAuthorityState:"DRAFT"};
 const grant={taskId:"ROLLING_WEDGE_INVESTMENT",manifestId:"M1",manifestFingerprint:"MF11",authorityEpoch:"E11",datasetId:"RW_CURRENT_STATE",instanceId:"DSG",logicalMember:"RW_CURRENT_STATE",writerId:"Rolling_Wedge_Workflow",readerId:"Rolling_Wedge_Workflow",fields:new Set(fields),idempotencyKey:key("DSG"),state:"ACTIVE" as const};

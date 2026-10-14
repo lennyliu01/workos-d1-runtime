@@ -244,7 +244,7 @@ export function authorizePersistence(
   }
 
   if (request.operation === "READ") {
-    if (entry.readers.size > 0 && !entry.readers.has(request.callerIdentity)) {
+    if (!entry.readers.has(request.callerIdentity)) {
       throw new Error("READ_NOT_AUTHORIZED");
     }
     if (request.logicalK1 && snapshot.startedPruneKeys.has(logicalKey(request.datasetId, request.logicalK1))) {
