@@ -323,8 +323,10 @@ function dynamicInstanceDecision(body: ReadRequest | WriteRequest, env: Candidat
       return b.readers.includes(body.caller_identity) && !body.read_purpose &&
         body.bootstrap_idempotency_key === undefined ? null : fail("READ_NOT_AUTHORIZED", 403);
     const w = b.writers.filter(x => x.writer_id === body.caller_identity);
+    const required = WORKOS_DATASETS[body.dataset_id]?.writeMode === "CURRENT_STATE"
+      ? "CONDITIONAL_CURRENT_STATE" : "APPEND_ONLY";
     return w.length === 1 && Array.isArray(w[0].operations) &&
-      w[0].operations.includes("ORDINARY_WRITE") && body.write_operation === undefined ?
+      w[0].operations.includes(required) && body.write_operation === undefined ?
       null : fail("WRITE_NOT_AUTHORIZED", 403);
   }
   if (body.dataset_id !== "RW_CURRENT_STATE" || body.caller_identity !== "Rolling_Wedge_Workflow" ||
