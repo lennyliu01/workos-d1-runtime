@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {handleWorkOsCandidatePersistence} from "../src/workos_candidate.js";
 import {authorizePersistence, PINNED_GATE_LOCATOR,PINNED_GATE_BLOB,PINNED_GATE_CONFIG_FINGERPRINT,type GateProjectionSnapshot, type ManifestAccessRow} from "../src/workos_persistent_gate_projection.js";
+import {loadPublishedBootstrapGrants} from "../src/workos_control_plane_loader.js";
 import {initializeBaselineWithReadback} from "../src/workos_initial_baseline_candidate.js";
 
 const ids=["DSG","DOL","WSP","GIBA","NA","ENB","ATD"];
@@ -97,4 +98,18 @@ assert.throws(()=>authorizePersistence({...snapshot,expectedActivationEpoch:"E10
 // Manual initializer remains disabled until trusted live grant is loaded.
 const cp={task:{taskId:"ROLLING_WEDGE_INVESTMENT"},gate:{...snapshot,bootstrapGrants:undefined}};
 await assert.rejects(()=>initializeBaselineWithReadback(cp as any,"DSG",payload("DSG"),"secret",fetch),/BOOTSTRAP_GRANT_OR_FIELDS_MISMATCH/);checks++;
+// New control projection is read only from the ACTIVE manifest exact source.
+const grantHeader=["Task_ID","Manifest_ID","Manifest_Fingerprint","Authority_Epoch",
+ "Dataset_ID","Instance_ID","Logical_Member","Writer_ID","Reader_ID",
+ "Allowed_Fields","Idempotency_Key","Grant_State"];
+const manifestMeta={Manifest_ID:"M1",Manifest_Fingerprint:"MF11",Bootstrap_Grant_Projection_Tab:"Initial_Baseline_Grants"};
+const grantRow=["ROLLING_WEDGE_INVESTMENT","M1","MF11","E11","RW_CURRENT_STATE","DSG","RW_CURRENT_STATE",
+ "Rolling_Wedge_Workflow","Rolling_Wedge_Workflow",fields.join(","),key("DSG"),"ACTIVE"];
+const grantReader={readDriveText:async()=>"",readSheet:async()=>[grantHeader,grantRow]};
+const resolved=await loadPublishedBootstrapGrants(grantReader as any,"accepted-manifest-file",manifestMeta,"E11",[entry]);
+assert.equal(resolved.size,1);checks++;
+const missing=await loadPublishedBootstrapGrants(grantReader as any,"accepted-manifest-file",{Manifest_ID:"M1"},"E11",[entry]);
+assert.equal(missing.size,0);checks++;
+await assert.rejects(()=>loadPublishedBootstrapGrants(grantReader as any,"accepted-manifest-file",manifestMeta,"E10",[entry]),/BOOTSTRAP_PROJECTION_UNTRUSTED_OR_DRIFT/);checks++;
+await assert.rejects(()=>loadPublishedBootstrapGrants({readDriveText:async()=>"",readSheet:async()=>[grantHeader,grantRow,grantRow]} as any,"accepted-manifest-file",manifestMeta,"E11",[entry]),/BOOTSTRAP_PROJECTION_DUPLICATE/);checks++;
 console.log(`PASS rw_batch07_runtime_bootstrap_validation checks=${checks}; isolated D1 rows=${dbRecords.size}`);
