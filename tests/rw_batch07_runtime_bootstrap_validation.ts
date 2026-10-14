@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {handleWorkOsCandidatePersistence} from "../src/workos_candidate.js";
 import {authorizePersistence, PINNED_GATE_LOCATOR,PINNED_GATE_BLOB,PINNED_GATE_CONFIG_FINGERPRINT,type GateProjectionSnapshot, type ManifestAccessRow} from "../src/workos_persistent_gate_projection.js";
 import {loadPublishedBootstrapGrants} from "../src/workos_control_plane_loader.js";
-import {initializeBaselineWithReadback} from "../src/workos_initial_baseline_candidate.js";
+import {initializeBaselineWithReadback,projectRWInitialBaselineWire} from "../src/workos_initial_baseline_candidate.js";
 
 const ids=["DSG","DOL","WSP","GIBA","NA","ENB","ATD"];
 const fields=["Company_ID","Instance_ID","Base_Source_Source_Status","Belief_State_ID","Valuation_State_ID","Decision_State_ID","Scenario_Probabilities","Confidence","Next_Reality_Watch_Accepted","Material_Capital_Commitment_Accepted","Production_D1_Initialized"];
@@ -186,4 +186,41 @@ const missing=await loadPublishedBootstrapGrants(grantReader as any,"accepted-ma
 assert.equal(missing.size,0);checks++;
 await assert.rejects(()=>loadPublishedBootstrapGrants(grantReader as any,"accepted-manifest-file",manifestMeta,"E10",[entry]),/BOOTSTRAP_PROJECTION_UNTRUSTED_OR_DRIFT/);checks++;
 await assert.rejects(()=>loadPublishedBootstrapGrants({readDriveText:async()=>"",readSheet:async()=>[grantHeader,grantRow,grantRow]} as any,"accepted-manifest-file",manifestMeta,"E11",[entry]),/BOOTSTRAP_PROJECTION_DUPLICATE/);checks++;
+
+const sourceResearch:Record<string,unknown>={
+ Company_ID:"GIBA",Instance_ID:"GIBA",Security_Ticker:"GIB.A",Exchange:"TSX",
+ Identity:"CGI Inc.",Base_Source_Materials:"https://docs.google.com/document/d/accepted/edit",
+ Base_Source_Source_Status:"SOURCE_STATUS: ACCEPTED; research evidence only",
+ Frozen_Baseline_Candidate:"https://docs.google.com/document/d/frozen/edit",
+ Frozen_Baseline_Status:"FROZEN_CANDIDATE",
+ Predecessor_Run_ID:"RW_B_GIBA_BASELINE_20261014_01",
+ Model2_Research_Version:"CA_TSX_MODEL2_GIBA_20261013_01",
+ Company_Specific_Decision_Overrides:"NONE_PROPOSED",
+ Belief_State_ID:null,Scenario_Probabilities:null,Confidence:null,
+ Valuation_State_ID:null,Decision_State_ID:null,
+ Next_Reality_Watch_Accepted:false,Material_Capital_Commitment_Accepted:false,
+ Production_D1_Initialized:false,FREEZE_IDENTITY_AND_RESEARCH_CUTOFF:"frozen",
+ RESEARCH_OBJECTIVE:"objective",WEDGE_DEFINITION:"wedge",
+ KEY_CAUSAL_MECHANISMS:"causal",WHAT_MUST_BE_PROVEN:"proof",
+ FALSIFIERS:"falsifiers",BEAR_BASE_WEDGE_WORKS_FROZEN_SCENARIO_DEFINITIONS:"scenarios",
+ MATERIAL_CAPITAL_COMMITMENT_CANDIDATE__REVISER_OWNED:"unaccepted commitment research",
+ NEXT_REALITY_WATCH_CANDIDATE__REVISER_OWNED:"unaccepted watch research",
+};
+const projected=projectRWInitialBaselineWire(sourceResearch);
+assert.equal(Object.keys(sourceResearch).length,29);
+assert.equal(Object.keys(projected).length,27);
+assert.equal(projected.Security_Ticker,"GIB.A");
+assert.equal(projected.MATERIAL_CAPITAL_COMMITMENT_CANDIDATE__REVISER_OWNED,undefined);
+assert.equal(projected.NEXT_REALITY_WATCH_CANDIDATE__REVISER_OWNED,undefined);
+assert.equal(sourceResearch.MATERIAL_CAPITAL_COMMITMENT_CANDIDATE__REVISER_OWNED,"unaccepted commitment research");
+assert.throws(()=>projectRWInitialBaselineWire({...sourceResearch,Unexpected_Field:"untrusted"}),/RESEARCH_PAYLOAD_SCHEMA_MISMATCH/);
+assert.throws(()=>projectRWInitialBaselineWire({...sourceResearch,Belief_State_ID:"unaccepted"}),/RESEARCH_PAYLOAD_OWNERSHIP_NOT_ACCEPTED/);
+assert.throws(()=>projectRWInitialBaselineWire({...sourceResearch,Company_ID:"WRONG"}),/RESEARCH_PAYLOAD_OWNERSHIP_NOT_ACCEPTED/);
+checks+=9;
+// A fully converted 27-field payload cannot be admitted by an 11-field grant.
+await assert.rejects(()=>initializeBaselineWithReadback(
+  {task:{taskId:"ROLLING_WEDGE_INVESTMENT"},gate:trustedGate} as any,
+  "GIBA",projected,"test-isolated-secret",boundFetch),
+  /BOOTSTRAP_GRANT_OR_FIELDS_MISMATCH/);checks++;
+
 console.log(`PASS rw_batch07_runtime_bootstrap_validation checks=${checks}; isolated D1 rows=${dbRecords.size}`);
