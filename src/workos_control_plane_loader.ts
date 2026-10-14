@@ -373,6 +373,7 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
       manifestId: metadata.Manifest_ID,
       taskId,
       manifestState: metadata.Manifest_State,
+      manifestFingerprint: metadata.Manifest_Fingerprint,
       manifestRegistrySnapshotId: metadata.Registry_Snapshot_ID,
       manifestRegistryFingerprint: metadata.Registry_Fingerprint,
 
