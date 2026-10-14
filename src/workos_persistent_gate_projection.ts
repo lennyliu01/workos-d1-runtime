@@ -193,7 +193,7 @@ function allowDraft(snapshot: GateProjectionSnapshot, entry: ManifestAccessRow, 
     request.idempotencyKey === grant.idempotencyKey &&
     sameSet(request.fields ?? new Set(), grant.fields) &&
     entry.writerScopes.some(scope => scope.writerId === grant.writerId &&
-      scope.operations.has("INITIAL_BASELINE") &&
+      scope.operations.has("CONDITIONAL_CURRENT_STATE") &&
       (scope.fields === null || [...grant.fields].every(field => scope.fields!.has(field))));
 }
 
