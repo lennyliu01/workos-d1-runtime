@@ -9,7 +9,45 @@ const fields=["Company_ID","Instance_ID","Base_Source_Source_Status","Belief_Sta
 const key=(id:string)=>`RW_BATCH_07_20261014.${id}.INITIAL_BASELINE`;
 const payload=(id:string)=>({Company_ID:id,Instance_ID:id,Base_Source_Source_Status:"SOURCE_STATUS: ACCEPTED; research evidence only",Belief_State_ID:null,Valuation_State_ID:null,Decision_State_ID:null,Scenario_Probabilities:null,Confidence:null,Next_Reality_Watch_Accepted:false,Material_Capital_Commitment_Accepted:false,Production_D1_Initialized:false});
 const entries=ids.map(id=>({dataset_id:"RW_CURRENT_STATE",instance_id:id,business_state:"DRAFT",readers:["Rolling_Wedge_Workflow"],writers:[{writer_id:"Rolling_Wedge_Workflow",operations:["INITIAL_BASELINE"]}],bootstrap:{fields,idempotency_key:key(id)}}));
-const env={RUNTIME_SECRET:"test-isolated-secret",RW_AUTHORITY_PROJECTION:JSON.stringify({state:"ACTIVE",authority_epoch:"E11",manifest_fingerprint:"MF11",bindings:entries}),RW_AUTHORITY_EPOCH:"E11",RW_MANIFEST_FINGERPRINT:"MF11"};
+const env={RUNTIME_SECRET:"test-isolated-secret",RW_AUTHORITY_PROJECTION:JSON.stringify({state:"ACTIVE",authority_epoch:"E11",manifest_fingerprint:"MF11",bindings:entries}),RW_AUTHORITY_EPOCH:"E11",RW_MANIFEST_FINGERPRINT:"MF11"}; // adversarial legacy keys deliberately ignored
+
+// Isolated fixture represents the result of an exact singleton-selected ACTIVE
+// Manifest read. Deployment-supplied JSON is deliberately NOT trusted.
+const dynamicAccesses:ManifestAccessRow[]=ids.map(id=>({
+ datasetId:"RW_CURRENT_STATE",instanceId:id,logicalMember:"RW_CURRENT_STATE",
+ contractFingerprint:"contract",physicalContractFingerprint:"contract",
+ readers:new Set(["Rolling_Wedge_Workflow"]),
+ writerScopes:[{writerId:"Rolling_Wedge_Workflow",
+  operations:new Set(["CONDITIONAL_CURRENT_STATE"]),fields:new Set(fields)}],
+ writeMode:"CURRENT_STATE",dynamicInstance:true,businessAuthorityState:"DRAFT",
+}));
+const syntheticGrants=new Map(ids.map(id=>["RW_CURRENT_STATE\u0000"+id,{
+ taskId:"ROLLING_WEDGE_INVESTMENT",manifestId:"M1",manifestFingerprint:"MF11",
+ authorityEpoch:"E11",datasetId:"RW_CURRENT_STATE",instanceId:id,
+ logicalMember:"RW_CURRENT_STATE",writerId:"Rolling_Wedge_Workflow",
+ readerId:"Rolling_Wedge_Workflow",fields:new Set(fields),
+ idempotencyKey:key(id),state:"ACTIVE" as const,
+}] as const));
+const trustedGate:GateProjectionSnapshot={
+ gateLocator:PINNED_GATE_LOCATOR,gateBlob:PINNED_GATE_BLOB,
+ gateConfigFingerprint:PINNED_GATE_CONFIG_FINGERPRINT,
+ authorityPublicationState:"EXACT_ONE",
+ authorityPublication:{authorityScopeFingerprint:"scope",currentCommittedCutoverId:"cut",
+  currentActivationEpoch:"E11",registrySnapshotId:"rs",manifestSetId:"set",
+  gateConfigFingerprint:PINNED_GATE_CONFIG_FINGERPRINT,workflowSetFingerprint:"wf"},
+ expectedAuthorityScopeFingerprint:"scope",expectedCutoverId:"cut",
+ expectedActivationEpoch:"E11",expectedManifestSetId:"set",
+ expectedGateConfigFingerprint:PINNED_GATE_CONFIG_FINGERPRINT,
+ expectedWorkflowSetFingerprint:"wf",referencedCutoverState:"AUTHORITY_COMMITTED",
+ currentRegistrySnapshotId:"rs",currentRegistryFingerprint:"rf",
+ manifestId:"M1",taskId:"ROLLING_WEDGE_INVESTMENT",manifestState:"ACTIVE",
+ manifestRegistrySnapshotId:"rs",manifestRegistryFingerprint:"rf",
+ manifestFingerprint:"MF11",bootstrapGrants:syntheticGrants,
+ migrationFenceActive:false,pruneFenceIndexAvailable:true,
+ pruneFencedKeys:new Set(),startedPruneKeys:new Set(),
+ archivedIdentityKeys:new Set(),accesses:dynamicAccesses,
+};
+const trustedCp={task:{taskId:"ROLLING_WEDGE_INVESTMENT"},gate:trustedGate};
 const dbRecords=new Map<string,{dataset_id:string;instance_id:string;version:number;previous_version:number;payload_json:string;invocation_id:string;idempotency_key:string;db_written_at:string}>();
 function db() {
  return {prepare:(q:string)=>{
@@ -35,7 +73,7 @@ function db() {
 }
 const isolated={...env,DB:db()};
 async function send(request:Record<string,unknown>,runtimeEnv:typeof isolated=isolated){
- const r=await handleWorkOsCandidatePersistence(new Request("https://isolated.invalid/candidate/workos-persistence",{method:"POST",headers:{Authorization:"Bearer test-isolated-secret"},body:JSON.stringify(request)}),runtimeEnv);
+ const r=await handleWorkOsCandidatePersistence(new Request("https://isolated.invalid/candidate/workos-persistence",{method:"POST",headers:{Authorization:"Bearer test-isolated-secret"},body:JSON.stringify(request)}),runtimeEnv,async()=>trustedCp as any);
  return{status:r.status,body:await r.json() as Record<string,unknown>};
 }
 const base=(id:string)=>({task_id:"ROLLING_WEDGE_INVESTMENT",caller_identity:"Rolling_Wedge_Workflow",dataset_id:"RW_CURRENT_STATE",instance_id:id,authority_epoch:"E11",manifest_fingerprint:"MF11"});
@@ -53,6 +91,29 @@ for(const id of ids){
  const replay=await send(write(id));assert.equal(replay.status,200);assert.equal(replay.body.replayed,true);checks++;
 }
 assert.equal(dbRecords.size,7);
+// A forged environment projection cannot authorize without the trusted source.
+const noSource=await handleWorkOsCandidatePersistence(
+  new Request("https://isolated.invalid/candidate/workos-persistence",{
+    method:"POST",headers:{Authorization:"Bearer test-isolated-secret"},
+    body:JSON.stringify(write("DSG"))}),isolated);
+assert.equal(noSource.status,403);checks++;
+const revokedSource=async()=>({task:{taskId:"ROLLING_WEDGE_INVESTMENT"},
+  gate:{...trustedGate,bootstrapGrants:new Map()}} as any);
+const revoked=await handleWorkOsCandidatePersistence(
+  new Request("https://isolated.invalid/candidate/workos-persistence",{
+    method:"POST",headers:{Authorization:"Bearer test-isolated-secret"},
+    body:JSON.stringify(write("DSG"))}),isolated,revokedSource);
+assert.equal(revoked.status,403);checks++;
+const driftedSource=async()=>({task:{taskId:"ROLLING_WEDGE_INVESTMENT"},
+  gate:trustedGate,projectionDrift:{agentsManifestFileId:"old",authoritativeManifestFileId:"new"}} as any);
+const drifted=await handleWorkOsCandidatePersistence(
+  new Request("https://isolated.invalid/candidate/workos-persistence",{
+    method:"POST",headers:{Authorization:"Bearer test-isolated-secret"},
+    body:JSON.stringify(write("DSG"))}),isolated,driftedSource);
+assert.equal(drifted.status,403);checks++;
+await fail({...write("DSG"),payload:{...payload("DSG"),
+  NEXT_REALITY_WATCH_CANDIDATE__REVISER_OWNED:"not accepted"},fields:[...fields,"NEXT_REALITY_WATCH_CANDIDATE__REVISER_OWNED"]});checks++;
+
 await fail(write("UNREGISTERED"));checks++;
 await fail({...write("DSG"),caller_identity:"MONITOR"});checks++;
 await fail({...write("DSG"),caller_identity:"REVISER"});checks++;
@@ -102,7 +163,7 @@ await assert.rejects(()=>initializeBaselineWithReadback(cp as any,"DSG",payload(
 const boundFetch=(async(_input:RequestInfo|URL, init?:RequestInit)=>{
  return handleWorkOsCandidatePersistence(
    new Request("https://isolated.invalid/candidate/workos-persistence",init),
-   isolated
+   isolated, async()=>trustedCp as any
  );
 }) as typeof fetch;
 const cpBound={task:{taskId:"ROLLING_WEDGE_INVESTMENT"},gate:snapshot};
