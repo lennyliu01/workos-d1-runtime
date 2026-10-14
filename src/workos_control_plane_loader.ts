@@ -249,24 +249,32 @@ export async function loadPublishedBootstrapGrants(
   if (required.some((col,i)=>values[0]?.[i]!==col))
     throw new Error("BOOTSTRAP_PROJECTION_SCHEMA_INVALID");
   const map=new Map<string,BootstrapGrantProjection>();
+  const seen=new Set<string>();
   for (const raw of values.slice(1).filter(row=>row.some(Boolean))) {
     const r=Object.fromEntries(required.map((col,i)=>[col,raw[i]??""]));
+    if (!["ACTIVE","REVOKED","DISABLED"].includes(r.Grant_State))
+      throw new Error("BOOTSTRAP_PROJECTION_STATE_INVALID");
     if (r.Grant_State!=="ACTIVE") continue;
     const entry=accesses.filter(x=>x.datasetId===r.Dataset_ID && x.instanceId===r.Instance_ID && x.logicalMember===r.Logical_Member);
     const fields=r.Allowed_Fields.split(",").map(x=>x.trim()).filter(Boolean);
     if (entry.length!==1 || entry[0].businessAuthorityState!=="DRAFT" ||
         entry[0].writeMode!=="CURRENT_STATE" ||
-        !entry[0].writerScopes.some(x=>x.writerId===r.Writer_ID && x.operations.has("CONDITIONAL_CURRENT_STATE")) ||
+        !entry[0].readers.has(r.Reader_ID) ||
+        !entry[0].writerScopes.some(x=>x.writerId===r.Writer_ID &&
+          x.operations.has("CONDITIONAL_CURRENT_STATE") &&
+          (x.fields===null || fields.every(f=>x.fields!.has(f)))) ||
         r.Task_ID!=="ROLLING_WEDGE_INVESTMENT" || r.Manifest_ID!==metadata.Manifest_ID ||
         !metadata.Manifest_Fingerprint || r.Manifest_Fingerprint!==metadata.Manifest_Fingerprint ||
         r.Authority_Epoch!==epoch || r.Dataset_ID!=="RW_CURRENT_STATE" ||
         r.Writer_ID!=="Rolling_Wedge_Workflow" || r.Reader_ID!=="Rolling_Wedge_Workflow" ||
         !r.Idempotency_Key || !/^[A-Za-z0-9._:-]{1,128}$/.test(r.Idempotency_Key) ||
         fields.length===0 || new Set(fields).size!==fields.length ||
+        fields.some(x=>x.endsWith("__REVISER_OWNED")) ||
         fields.some(x=>!/^[A-Za-z0-9._:-]{1,128}$/.test(x)))
       throw new Error("BOOTSTRAP_PROJECTION_UNTRUSTED_OR_DRIFT");
     const key=`${r.Dataset_ID}\u0000${r.Instance_ID}`;
-    if (map.has(key)) throw new Error("BOOTSTRAP_PROJECTION_DUPLICATE");
+    if (seen.has(key)) throw new Error("BOOTSTRAP_PROJECTION_DUPLICATE");
+    seen.add(key);
     map.set(key,{
       taskId:r.Task_ID,manifestId:r.Manifest_ID,manifestFingerprint:r.Manifest_Fingerprint,
       authorityEpoch:r.Authority_Epoch,datasetId:r.Dataset_ID,instanceId:r.Instance_ID,
