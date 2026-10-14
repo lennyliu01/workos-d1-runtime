@@ -1,0 +1,24 @@
+name: RW Batch07 Candidate Runtime Tests
+on:
+  push:
+    branches: [candidate/rw-batch07-bootstrap-20261014]
+  pull_request:
+    paths:
+      - "src/workos_candidate.ts"
+      - "src/workos_persistent_gate_projection.ts"
+      - "src/workos_initial_baseline_candidate.ts"
+      - "tests/rw_batch07_runtime_bootstrap_validation.ts"
+permissions:
+  contents: read
+jobs:
+  isolated-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npx tsx tests/rw_batch07_runtime_bootstrap_validation.ts
+      - run: npm run test:workos-business-executor
