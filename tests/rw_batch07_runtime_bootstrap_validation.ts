@@ -274,4 +274,82 @@ for(const source of [gateSource,loaderSource]){
  checks++;
 }
 
+
+// Isolated D1 append fixture: covers the unchanged FX compatibility route and
+// ACTIVE dynamic instances without touching the production D1 binding.
+type IsolatedAppend = {append_seq:number;dataset_id:string;instance_id:string;
+ record_key:string;payload_json:string;invocation_id:string;idempotency_key:string;db_written_at:string};
+const appendRecords:IsolatedAppend[]=[];
+const appendDB={prepare:(sql:string)=>{
+ let args:unknown[]=[];
+ const stmt={
+  bind(...v:unknown[]){args=v;return stmt;},
+  async first<T>():Promise<T|null>{
+   if(sql.includes("WHERE idempotency_key=?"))return (appendRecords.find(x=>x.idempotency_key===args[0])??null) as T|null;
+   if(sql.includes("WHERE invocation_id=?"))return (appendRecords.find(x=>x.invocation_id===args[0])??null) as T|null;
+   if(sql.includes("WHERE dataset_id=? AND instance_id=? AND record_key=?"))
+     return (appendRecords.find(x=>x.dataset_id===args[0]&&x.instance_id===args[1]&&x.record_key===args[2])??null) as T|null;
+   throw Error("unexpected append first:"+sql);
+  },
+  async run(){
+   if(!sql.includes("INSERT INTO workos_append_records"))throw Error("unexpected append write:"+sql);
+   const [dataset_id,instance_id,record_key,payload_json,invocation_id,idempotency_key]=args as string[];
+   if(appendRecords.some(x=>(x.dataset_id===dataset_id&&x.instance_id===instance_id&&x.record_key===record_key)||x.idempotency_key===idempotency_key))
+     return {success:true,meta:{changes:0}};
+   appendRecords.push({append_seq:appendRecords.length+1,dataset_id,instance_id,record_key,
+    payload_json,invocation_id,idempotency_key,db_written_at:"2026-10-14T00:00:00Z"});
+   return {success:true,meta:{changes:1}};
+  },
+  async all<T>(){return {success:true,results:[] as T[]}}
+ };
+ return stmt;
+}};
+const appendEnv={...env,DB:appendDB};
+async function appendSend(request:Record<string,unknown>,snapshot?:GateProjectionSnapshot){
+ const response=await handleWorkOsCandidatePersistence(
+  new Request("https://isolated.invalid/candidate/workos-persistence",{
+   method:"POST",headers:{Authorization:"Bearer test-isolated-secret"},
+   body:JSON.stringify(request)}),appendEnv,
+  snapshot?async()=>({task:{taskId:"ROLLING_WEDGE_INVESTMENT"},gate:snapshot} as any):undefined);
+ return {status:response.status,body:await response.json() as Record<string,unknown>};
+}
+const fxBase={task_id:"US_JAPAN_FX_POLICY",instance_id:"SINGLETON",dataset_id:"FX_POLICY_EVIDENCE_LOG"};
+const fxWrite={...fxBase,operation:"WRITE",caller_identity:"COLLECTOR",record_key:"FX.ISOLATED.1",
+ idempotency_key:"FX.ISOLATED.IDEMPOTENT.1",payload:{status:"ACCEPTED",value:42}};
+const fxWritten=await appendSend(fxWrite);
+assert.equal(fxWritten.status,200,JSON.stringify(fxWritten.body));checks++;
+const fxReplay=await appendSend(fxWrite);
+assert.equal(fxReplay.status,200);assert.equal(fxReplay.body.replayed,true);checks++;
+const fxRead=await appendSend({...fxBase,operation:"READ",caller_identity:"READER",
+ selector:{kind:"RECORD",record_key:"FX.ISOLATED.1"}});
+assert.equal(fxRead.status,200,JSON.stringify(fxRead.body));
+assert.deepEqual((fxRead.body.record as Record<string,unknown>).payload,fxWrite.payload);checks++;
+const fxForbidden=await appendSend({...fxWrite,caller_identity:"REVISER"});
+assert.equal(fxForbidden.status,403);checks++;
+const fxConflict=await appendSend({...fxWrite,payload:{status:"ACCEPTED",value:99}});
+assert.equal(fxConflict.status,409);checks++;
+assert.equal(appendRecords.length,1);
+const activeEleventh: ManifestAccessRow = {
+ datasetId:"RW_EVIDENCE_HISTORY",instanceId:eleventh,logicalMember:"RW_EVIDENCE_HISTORY",
+ contractFingerprint:"contract",physicalContractFingerprint:"contract",
+ readers:new Set(["Rolling_Wedge_Workflow","REVISER"]),
+ writerScopes:[{writerId:"MONITOR",operations:new Set(["APPEND_ONLY"]),fields:null}],
+ writeMode:"APPEND_ONLY",dynamicInstance:true,businessAuthorityState:"ACTIVE",
+};
+const activeEleventhGate:GateProjectionSnapshot = {...trustedGate,
+ accesses:[...dynamicAccesses,activeEleventh]};
+const evidenceWrite={task_id:"ROLLING_WEDGE_INVESTMENT",caller_identity:"MONITOR",
+ operation:"WRITE",dataset_id:"RW_EVIDENCE_HISTORY",instance_id:eleventh,
+ authority_epoch:"E11",manifest_fingerprint:"MF11",record_key:"RW.VIRTUAL.ACTUAL.1",
+ idempotency_key:"RW.VIRTUAL.IDEMPOTENT.1",payload:{kind:"TEST_ONLY"}};
+const aw11=await appendSend(evidenceWrite,activeEleventhGate);
+assert.equal(aw11.status,200,JSON.stringify(aw11.body));checks++;
+const ar11=await appendSend({...evidenceWrite,operation:"READ",
+ caller_identity:"REVISER",selector:{kind:"RECORD",record_key:"RW.VIRTUAL.ACTUAL.1"},
+ record_key:undefined,idempotency_key:undefined,payload:undefined},activeEleventhGate);
+assert.equal(ar11.status,200,JSON.stringify(ar11.body));checks++;
+const denied11=await appendSend({...evidenceWrite,caller_identity:"DECISION"},activeEleventhGate);
+assert.equal(denied11.status,403);checks++;
+assert.equal(appendRecords.length,2);
+
 console.log(`PASS rw_batch07_runtime_bootstrap_validation checks=${checks}; isolated D1 rows=${dbRecords.size}`);
