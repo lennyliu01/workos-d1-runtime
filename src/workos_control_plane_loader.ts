@@ -1,7 +1,7 @@
 import {
-  PINNED_GATE_BLOB,
-  PINNED_GATE_CONFIG_FINGERPRINT,
-  PINNED_GATE_LOCATOR,
+  WORKOS_D1_GATE_IMPLEMENTATION_ID,
+  WORKOS_D1_GATE_IMPLEMENTATION_VERSION,
+  ACCEPTED_GATE_CONFIG_FINGERPRINT,
   type AuthorityPublicationProjection,
   type GateProjectionSnapshot,
   type BootstrapGrantProjection,
@@ -321,7 +321,7 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
     throw new Error("AUTHORITY_LIVE_GATE_BINDING_MISSING");
   }
 
-  if (snapshot.gateConfigFingerprint !== PINNED_GATE_CONFIG_FINGERPRINT) {
+  if (snapshot.gateConfigFingerprint !== ACCEPTED_GATE_CONFIG_FINGERPRINT) {
     throw new Error("GATE_CONFIG_FINGERPRINT_DRIFT");
   }
 
@@ -415,8 +415,8 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
     manifestFingerprint: metadata.Manifest_Fingerprint,
     manifestMetadata: metadata,
     gate: {
-      gateLocator: PINNED_GATE_LOCATOR,
-      gateBlob: PINNED_GATE_BLOB,
+      gateImplementationId: WORKOS_D1_GATE_IMPLEMENTATION_ID,
+      gateImplementationVersion: WORKOS_D1_GATE_IMPLEMENTATION_VERSION,
       gateConfigFingerprint: snapshot.gateConfigFingerprint,
 
       authorityPublicationState: "EXACT_ONE",

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {handleWorkOsCandidatePersistence} from "../src/workos_candidate.js";
-import {authorizePersistence, PINNED_GATE_LOCATOR,PINNED_GATE_BLOB,PINNED_GATE_CONFIG_FINGERPRINT,type GateProjectionSnapshot, type ManifestAccessRow} from "../src/workos_persistent_gate_projection.js";
+import {authorizePersistence, WORKOS_D1_GATE_IMPLEMENTATION_ID,WORKOS_D1_GATE_IMPLEMENTATION_VERSION,ACCEPTED_GATE_CONFIG_FINGERPRINT,type GateProjectionSnapshot, type ManifestAccessRow} from "../src/workos_persistent_gate_projection.js";
 import {loadPublishedBootstrapGrants} from "../src/workos_control_plane_loader.js";
 import {initializeBaselineWithReadback,projectRWInitialBaselineWire} from "../src/workos_initial_baseline_candidate.js";
 
@@ -29,15 +29,15 @@ const syntheticGrants=new Map(ids.map(id=>["RW_CURRENT_STATE\u0000"+id,{
  idempotencyKey:key(id),state:"ACTIVE" as const,
 }] as const));
 const trustedGate:GateProjectionSnapshot={
- gateLocator:PINNED_GATE_LOCATOR,gateBlob:PINNED_GATE_BLOB,
- gateConfigFingerprint:PINNED_GATE_CONFIG_FINGERPRINT,
+ gateImplementationId:WORKOS_D1_GATE_IMPLEMENTATION_ID,gateImplementationVersion:WORKOS_D1_GATE_IMPLEMENTATION_VERSION,
+ gateConfigFingerprint:ACCEPTED_GATE_CONFIG_FINGERPRINT,
  authorityPublicationState:"EXACT_ONE",
  authorityPublication:{authorityScopeFingerprint:"scope",currentCommittedCutoverId:"cut",
   currentActivationEpoch:"E11",registrySnapshotId:"rs",manifestSetId:"set",
-  gateConfigFingerprint:PINNED_GATE_CONFIG_FINGERPRINT,workflowSetFingerprint:"wf"},
+  gateConfigFingerprint:ACCEPTED_GATE_CONFIG_FINGERPRINT,workflowSetFingerprint:"wf"},
  expectedAuthorityScopeFingerprint:"scope",expectedCutoverId:"cut",
  expectedActivationEpoch:"E11",expectedManifestSetId:"set",
- expectedGateConfigFingerprint:PINNED_GATE_CONFIG_FINGERPRINT,
+ expectedGateConfigFingerprint:ACCEPTED_GATE_CONFIG_FINGERPRINT,
  expectedWorkflowSetFingerprint:"wf",referencedCutoverState:"AUTHORITY_COMMITTED",
  currentRegistrySnapshotId:"rs",currentRegistryFingerprint:"rf",
  manifestId:"M1",taskId:"ROLLING_WEDGE_INVESTMENT",manifestState:"ACTIVE",
@@ -141,9 +141,9 @@ for(const id of ["ENPLAS","SERVICENOW","FIGMA"]){
 const entry:ManifestAccessRow={datasetId:"RW_CURRENT_STATE",instanceId:"DSG",logicalMember:"RW_CURRENT_STATE",contractFingerprint:"contract",physicalContractFingerprint:"contract",readers:new Set(["Rolling_Wedge_Workflow"]),writerScopes:[{writerId:"Rolling_Wedge_Workflow",operations:new Set(["CONDITIONAL_CURRENT_STATE"]),fields:new Set(fields)}],writeMode:"CURRENT_STATE",dynamicInstance:true,businessAuthorityState:"DRAFT"};
 const grant={taskId:"ROLLING_WEDGE_INVESTMENT",manifestId:"M1",manifestFingerprint:"MF11",authorityEpoch:"E11",datasetId:"RW_CURRENT_STATE",instanceId:"DSG",logicalMember:"RW_CURRENT_STATE",writerId:"Rolling_Wedge_Workflow",readerId:"Rolling_Wedge_Workflow",fields:new Set(fields),idempotencyKey:key("DSG"),state:"ACTIVE" as const};
 const snapshot:GateProjectionSnapshot={
- gateLocator:PINNED_GATE_LOCATOR,gateBlob:PINNED_GATE_BLOB,gateConfigFingerprint:PINNED_GATE_CONFIG_FINGERPRINT,
- authorityPublicationState:"EXACT_ONE",authorityPublication:{authorityScopeFingerprint:"scope",currentCommittedCutoverId:"cut",currentActivationEpoch:"E11",registrySnapshotId:"rs",manifestSetId:"set",gateConfigFingerprint:PINNED_GATE_CONFIG_FINGERPRINT,workflowSetFingerprint:"wf"},
- expectedAuthorityScopeFingerprint:"scope",expectedCutoverId:"cut",expectedActivationEpoch:"E11",expectedManifestSetId:"set",expectedGateConfigFingerprint:PINNED_GATE_CONFIG_FINGERPRINT,expectedWorkflowSetFingerprint:"wf",referencedCutoverState:"AUTHORITY_COMMITTED",
+ gateImplementationId:WORKOS_D1_GATE_IMPLEMENTATION_ID,gateImplementationVersion:WORKOS_D1_GATE_IMPLEMENTATION_VERSION,gateConfigFingerprint:ACCEPTED_GATE_CONFIG_FINGERPRINT,
+ authorityPublicationState:"EXACT_ONE",authorityPublication:{authorityScopeFingerprint:"scope",currentCommittedCutoverId:"cut",currentActivationEpoch:"E11",registrySnapshotId:"rs",manifestSetId:"set",gateConfigFingerprint:ACCEPTED_GATE_CONFIG_FINGERPRINT,workflowSetFingerprint:"wf"},
+ expectedAuthorityScopeFingerprint:"scope",expectedCutoverId:"cut",expectedActivationEpoch:"E11",expectedManifestSetId:"set",expectedGateConfigFingerprint:ACCEPTED_GATE_CONFIG_FINGERPRINT,expectedWorkflowSetFingerprint:"wf",referencedCutoverState:"AUTHORITY_COMMITTED",
  currentRegistrySnapshotId:"rs",currentRegistryFingerprint:"rf",manifestId:"M1",taskId:"ROLLING_WEDGE_INVESTMENT",manifestState:"ACTIVE",manifestRegistrySnapshotId:"rs",manifestRegistryFingerprint:"rf",manifestFingerprint:"MF11",bootstrapGrants:new Map([["RW_CURRENT_STATE\u0000DSG",grant]]),
  migrationFenceActive:false,pruneFenceIndexAvailable:true,pruneFencedKeys:new Set(),startedPruneKeys:new Set(),archivedIdentityKeys:new Set(),accesses:[entry]
 };
@@ -222,5 +222,56 @@ await assert.rejects(()=>initializeBaselineWithReadback(
   {task:{taskId:"ROLLING_WEDGE_INVESTMENT"},gate:trustedGate} as any,
   "GIBA",projected,"test-isolated-secret",boundFetch),
   /BOOTSTRAP_GRANT_OR_FIELDS_MISMATCH/);checks++;
+
+
+const eleventh = "RW_VIRTUAL_11";
+const virtualEntry: ManifestAccessRow = {...dynamicAccesses[0],instanceId:eleventh};
+const virtualGrant = {...syntheticGrants.get("RW_CURRENT_STATE\u0000DSG")!,
+ instanceId:eleventh,idempotencyKey:key(eleventh)};
+const virtualGate: GateProjectionSnapshot = {...trustedGate,
+ accesses:[...dynamicAccesses,virtualEntry],
+ bootstrapGrants:new Map([...syntheticGrants,["RW_CURRENT_STATE\u0000"+eleventh,virtualGrant]])};
+const futureSend=async(request:Record<string,unknown>,snapshot:GateProjectionSnapshot)=>{
+ const response=await handleWorkOsCandidatePersistence(
+  new Request("https://isolated.invalid/candidate/workos-persistence",{
+   method:"POST",headers:{Authorization:"Bearer test-isolated-secret"},
+   body:JSON.stringify(request)}),isolated,
+   async()=>({task:{taskId:"ROLLING_WEDGE_INVESTMENT"},gate:snapshot} as any));
+ return {status:response.status,body:await response.json() as Record<string,unknown>};
+};
+for(const forbidden of [
+ [write(eleventh),trustedGate,"UNREGISTERED"],
+ [{...write(eleventh),caller_identity:"MONITOR"},virtualGate,"WRONG_WRITER"],
+ [{...write(eleventh),authority_epoch:"E10"},virtualGate,"STALE_EPOCH"],
+ [{...write(eleventh),manifest_fingerprint:"MF10"},virtualGate,"WRONG_FINGERPRINT"],
+ [read(eleventh),trustedGate,"UNREGISTERED_READ"],
+ [{...read(eleventh),caller_identity:"MONITOR"},virtualGate,"WRONG_READER"],
+ [{...write(eleventh),write_operation:undefined},virtualGate,"ORDINARY_DRAFT_WRITE"],
+] as const){
+ const r=await futureSend(forbidden[0],forbidden[1]);
+ assert.equal(r.status,403,forbidden[2]+":"+JSON.stringify(r.body));checks++;
+}
+const vw=await futureSend(write(eleventh),virtualGate);
+assert.equal(vw.status,200,JSON.stringify(vw.body));checks++;
+const vr=await futureSend(read(eleventh),virtualGate);
+assert.equal(vr.status,200,JSON.stringify(vr.body));
+assert.deepEqual(vr.body.payload,payload(eleventh));checks++;
+assert.equal(dbRecords.size,11);
+assert.equal(trustedGate.gateImplementationId,"WORKOS_D1_PERSISTENT_GATE");checks++;
+assert.equal(trustedGate.gateImplementationVersion,"1.0.0-candidate");checks++;
+assert.throws(()=>authorizePersistence({...trustedGate,gateImplementationVersion:"unapproved"},{
+ taskId:"ROLLING_WEDGE_INVESTMENT",callerIdentity:"Rolling_Wedge_Workflow",
+ manifestId:"M1",datasetId:"RW_CURRENT_STATE",instanceId:"DSG",
+ logicalMember:"RW_CURRENT_STATE",operation:"READ",
+ readPurpose:"INITIAL_BASELINE_READBACK",expectedVersion:1,idempotencyKey:key("DSG"),
+}),/GATE_IMPLEMENTATION_VERSION_DRIFT/);checks++;
+const gateSource=await (await import("node:fs/promises")).readFile(
+ new URL("../src/workos_persistent_gate_projection.ts",import.meta.url),"utf8");
+const loaderSource=await (await import("node:fs/promises")).readFile(
+ new URL("../src/workos_control_plane_loader.ts",import.meta.url),"utf8");
+for(const source of [gateSource,loaderSource]){
+ assert.doesNotMatch(source,/data-archive-runtime|gate\\.py|PINNED_GATE_BLOB|PINNED_GATE_LOCATOR/);
+ checks++;
+}
 
 console.log(`PASS rw_batch07_runtime_bootstrap_validation checks=${checks}; isolated D1 rows=${dbRecords.size}`);

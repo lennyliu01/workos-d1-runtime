@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { AGENTS_FILE_ID, REPOSITORY_CUTOVER_CONTROL_ID, loadControlPlane, type ExactControlPlaneReader } from "../src/workos_control_plane_loader.js";
 import { loadLiveGateContext } from "../src/workos_live_gate_context.js";
-import { PINNED_GATE_BLOB, PINNED_GATE_CONFIG_FINGERPRINT, authorizePersistence, type ManifestAccessRow } from "../src/workos_persistent_gate_projection.js";
+import { WORKOS_D1_GATE_IMPLEMENTATION_VERSION, ACCEPTED_GATE_CONFIG_FINGERPRINT, authorizePersistence, type ManifestAccessRow } from "../src/workos_persistent_gate_projection.js";
 
 const REG="REG", MAN="MAN", ACC="ACC", MIG="MIG", PRUNE="PRUNE", TX="TX", ROUTE="ROUTE", SHARD="SHARD", BASE="BASE";
 const workflowId="WF",profileId="PROFILE",collectorId="COLLECTOR",readerId="READER";
@@ -39,11 +39,11 @@ class FakeReader implements ExactControlPlaneReader {
     this.sheetReads.push(`${id}:${sheet}`);
     if(id===REPOSITORY_CUTOVER_CONTROL_ID&&sheet==="Authority_Publication") return [
       ["Authority_Scope_Fingerprint","Current_Committed_Cutover_ID","Current_Activation_Epoch","Registry_Snapshot_ID","Manifest_Set_ID","Gate_Config_Fingerprint","Workflow_Set_Fingerprint","Published_At"],
-      ["scope","CUT","10","RS1","MSET1",PINNED_GATE_CONFIG_FINGERPRINT,"WFSET","time"],
+      ["scope","CUT","10","RS1","MSET1",ACCEPTED_GATE_CONFIG_FINGERPRINT,"WFSET","time"],
     ];
     if(id===REPOSITORY_CUTOVER_CONTROL_ID&&sheet==="Cutovers") return [
       ["Cutover_ID","Cutover_State","Authority_Scope_Fingerprint","Target_Registry_Snapshot_ID","Target_Registry_Fingerprint","Target_Registry_File_ID","Target_Manifest_Set_ID","Target_Workflow_Set_Fingerprint","Persistent_Data_Gate_Config_Fingerprint","MIGRATION_WRITE_FENCE_State","Activation_Epoch","Target_Acceptance_Binding_ID"],
-      ["CUT","COMPLETE","scope","RS1","RF",REG,"MSET1","WFSET",PINNED_GATE_CONFIG_FINGERPRINT,"RELEASED","10","AB"],
+      ["CUT","COMPLETE","scope","RS1","RF",REG,"MSET1","WFSET",ACCEPTED_GATE_CONFIG_FINGERPRINT,"RELEASED","10","AB"],
     ];
     if(id===REPOSITORY_CUTOVER_CONTROL_ID&&sheet==="Manifest_Set_Members") return [
       ["Manifest_Set_ID","Task_ID","Manifest_File_ID","Manifest_Fingerprint","Projection_State"],
@@ -135,7 +135,7 @@ class FakeReader implements ExactControlPlaneReader {
 const reader=new FakeReader();
 const cp=await loadControlPlane(reader,"US_JAPAN_FX_POLICY");
 assert.equal(cp.manifestFileId,MAN);
-assert.equal(cp.gate.gateBlob,PINNED_GATE_BLOB);
+assert.equal(cp.gate.gateImplementationVersion,WORKOS_D1_GATE_IMPLEMENTATION_VERSION);
 assert.equal(cp.gate.migrationFenceActive,false);
 assert.equal(cp.gate.pruneFenceIndexAvailable,true);
 assert.equal(cp.gate.pruneFencedKeys.size,0);

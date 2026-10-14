@@ -1,7 +1,9 @@
-export const PINNED_GATE_LOCATOR =
-  "https://github.com/lennyliu01/data-archive-runtime/blob/3b3158b78eaf6e93bf915f6d49fb0964390c90bb/src/data_archive_runtime/gate.py";
-export const PINNED_GATE_BLOB = "ad08749e52427f81f66dab89788779eb29bb09c2";
-export const PINNED_GATE_CONFIG_FINGERPRINT =
+/** WorkOS-owned candidate Gate. Publication of this implementation requires governed CHANGE.
+ * This fingerprint identifies the current singleton-authorized configuration,
+ * not a Python code pin or an assertion of production approval. */
+export const WORKOS_D1_GATE_IMPLEMENTATION_ID = "WORKOS_D1_PERSISTENT_GATE";
+export const WORKOS_D1_GATE_IMPLEMENTATION_VERSION = "1.0.0-candidate";
+export const ACCEPTED_GATE_CONFIG_FINGERPRINT =
   "ba3bb9599a034a764c9bdfd10a3dca79436fbae80960ace6a64e2786035909f8";
 
 export type PersistenceOperation = "READ" | "WRITE";
@@ -51,8 +53,8 @@ export interface BootstrapGrantProjection {
 }
 
 export interface GateProjectionSnapshot {
-  gateLocator: string;
-  gateBlob: string;
+  gateImplementationId: string;
+  gateImplementationVersion: string;
   gateConfigFingerprint: string;
 
   authorityPublicationState: "EXACT_ONE" | "UNAVAILABLE" | "MISSING" | "CONFLICT";
@@ -106,10 +108,16 @@ function logicalKey(datasetId: string, logicalK1: string): string {
   return `${datasetId}\u0000${logicalK1}`;
 }
 
-export function assertGateProjectionPin(snapshot: GateProjectionSnapshot): void {
-  if (snapshot.gateLocator !== PINNED_GATE_LOCATOR) throw new Error("GATE_LOCATOR_DRIFT");
-  if (snapshot.gateBlob !== PINNED_GATE_BLOB) throw new Error("GATE_BLOB_DRIFT");
-  if (snapshot.gateConfigFingerprint !== PINNED_GATE_CONFIG_FINGERPRINT) {
+export function assertWorkOsGateImplementation(snapshot: GateProjectionSnapshot): void {
+  if (snapshot.gateImplementationId !== WORKOS_D1_GATE_IMPLEMENTATION_ID) {
+    throw new Error("GATE_IMPLEMENTATION_ID_DRIFT");
+  }
+  if (snapshot.gateImplementationVersion !== WORKOS_D1_GATE_IMPLEMENTATION_VERSION) {
+    throw new Error("GATE_IMPLEMENTATION_VERSION_DRIFT");
+  }
+  if (!snapshot.expectedGateConfigFingerprint ||
+      snapshot.gateConfigFingerprint !== snapshot.expectedGateConfigFingerprint ||
+      snapshot.gateConfigFingerprint !== ACCEPTED_GATE_CONFIG_FINGERPRINT) {
     throw new Error("GATE_CONFIG_FINGERPRINT_DRIFT");
   }
 }
@@ -201,7 +209,7 @@ export function authorizePersistence(
   snapshot: GateProjectionSnapshot,
   request: PersistenceAuthorizationRequest,
 ): ManifestAccessRow {
-  assertGateProjectionPin(snapshot);
+  assertWorkOsGateImplementation(snapshot);
   assertAuthority(snapshot);
 
   if (snapshot.manifestState !== "ACTIVE") throw new Error(`MANIFEST_NOT_ACTIVE:${snapshot.manifestState}`);
