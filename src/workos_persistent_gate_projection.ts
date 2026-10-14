@@ -80,6 +80,8 @@ export interface GateProjectionSnapshot {
   manifestRegistryFingerprint: string;
 
   migrationFenceActive: boolean;
+  /** Trusted loader marks only ACTIVE Registry-verified ACTIVE_ONLY datasets. */
+  nonArchiveDatasetIds?: ReadonlySet<string>;
   pruneFenceIndexAvailable: boolean;
   pruneFencedKeys: ReadonlySet<string>;
   startedPruneKeys: ReadonlySet<string>;
@@ -226,7 +228,8 @@ export function authorizePersistence(
   if (request.operation === "WRITE" && snapshot.migrationFenceActive) {
     throw new Error("MIGRATION_WRITE_FENCE_ACTIVE");
   }
-  if (request.operation === "READ" && !snapshot.pruneFenceIndexAvailable) {
+  if (request.operation === "READ" && !snapshot.pruneFenceIndexAvailable &&
+      !snapshot.nonArchiveDatasetIds?.has(request.datasetId)) {
     throw new Error("PRUNE_FENCE_UNAVAILABLE");
   }
 
