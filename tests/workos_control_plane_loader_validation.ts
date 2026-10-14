@@ -25,7 +25,8 @@ This file is the sole authority for \`Monitor_Enabled\`, \`State_Status\`, and \
 - State_Status: \`${state}\`
 `;
 
-type Fault="pruneUnavailable"|"physicalDrift"|"migrationActive"|"pruneStarted"|"archived"|"baselineDraft";
+type Fault="pruneUnavailable"|"physicalDrift"|"migrationActive"|"pruneStarted"|"archived"|"baselineDraft"|
+  "rwArchiveEnabled"|"rwControlUnavailable"|"rwCapabilityBad"|"rwFenceActive"|"rwEpochBad";
 class FakeReader implements ExactControlPlaneReader {
   readonly driveReads:string[]=[]; readonly sheetReads:string[]=[];
   constructor(private readonly fault?:Fault){}
@@ -89,8 +90,29 @@ class FakeReader implements ExactControlPlaneReader {
     if(id===REG&&sheet==="Dataset_Contracts") return [
       ["Dataset_ID","Task_ID","Dataset_Contract_Owner","Contract_Status","Business_Write_Mode","Business_Time_Semantics","Archive_Enabled","Historical_Resolution_Mode","Registry_Contract_Fingerprint"],
       ["FX_POLICY_RUN_LOG","US_JAPAN_FX_POLICY","FX","ACTIVE","APPEND_ONLY","EVENT_TIME","TRUE","EXACT_RECORD",this.fault==="physicalDrift"?"wrong":"schema"],
-      ["RW_CURRENT_STATE","ROLLING_WEDGE_INVESTMENT","RW","ACTIVE","GOVERNED_CURRENT","CURRENT","TRUE","ACTIVE_ONLY","rw-schema"],
+      ["RW_CURRENT_STATE","ROLLING_WEDGE_INVESTMENT","RW","ACTIVE","GOVERNED_CURRENT","CURRENT",this.fault==="rwArchiveEnabled"?"TRUE":"FALSE","ACTIVE_ONLY","rw-schema"],
+      ...["RW_COMPANY_REGISTRY","RW_EVIDENCE_HISTORY","RW_REVISION_HISTORY","RW_VALUATION_HISTORY","RW_RUN_LOG"].map(id=>
+        [id,"ROLLING_WEDGE_INVESTMENT","RW","ACTIVE","APPEND_ONLY","EVENT","FALSE","ACTIVE_ONLY",`rw-schema-${id}`]),
     ];
+    if(id===REPOSITORY_CUTOVER_CONTROL_ID&&sheet==="RW_Non_Archive_Control"){
+      if(this.fault==="rwControlUnavailable")throw new Error("RW non-Archive source unavailable");
+      const names=["RW_CURRENT_STATE","RW_COMPANY_REGISTRY","RW_EVIDENCE_HISTORY",
+        "RW_REVISION_HISTORY","RW_VALUATION_HISTORY","RW_RUN_LOG"];
+      const cases=["D1_APPEND_WRITE_SAFETY","D1_CURRENT_STATE_CAS",
+        "D1_BOUNDED_READ","ACTIVATION_TIME_D1_CAPABILITY_RECONFIRMATION"];
+      return [
+        ["Task_ID","Dataset_ID","Cutover_ID","Activation_Epoch","Registry_Snapshot_ID",
+          "Registry_Fingerprint","Manifest_ID","Manifest_Fingerprint","Registry_Contract_Fingerprint",
+          "Acceptance_Binding_ID","Capability_Proof_State","Capability_Evidence_Ref",
+          ...cases,"Migration_Write_Fence_State"],
+        ...names.map((id,i)=>["ROLLING_WEDGE_INVESTMENT",id,"CUT",
+          this.fault==="rwEpochBad"?"9":"10","RS1","RF","RWMS","RWMF",
+          id==="RW_CURRENT_STATE"?"rw-schema":`rw-schema-${id}`,
+          "AB",this.fault==="rwCapabilityBad"?"UNKNOWN":"ACCEPTED",
+          "exact-pcv-provider-capability-proof",...cases.map(()=>"PASS"),
+          this.fault==="rwFenceActive"&&i===0?"ACTIVE":"RELEASED"]),
+      ];
+    }
     if(id===ACC&&sheet==="Runtime_Component_Projection") return [
       ["Acceptance_Binding_ID","Component_ID","Locator_Type","Exact_Locator","Evidence_Ref","Projection_State"],
       ["AB","D1_PROVIDER_INVOCATION_CONTRACT","DRIVE_FILE_ID","contract","e","ACTIVE"],
@@ -167,13 +189,59 @@ const rwAccess:ManifestAccessRow={
   readers:new Set(["MONITOR"]),writerScopes:[{writerId:"MONITOR",operations:new Set(["CONDITIONAL_CURRENT_STATE"]),fields:null}],
   writeMode:"CURRENT_STATE",dynamicInstance:true,businessAuthorityState:"UNRESOLVED",
 };
-const liveRw=await loadLiveGateContext(new FakeReader(),{
-  taskId:"ROLLING_WEDGE_INVESTMENT",currentCutoverId:"CUT",currentRegistryFileId:REG,currentRegistrySnapshotId:"RS1",currentRegistryFingerprint:"RF",currentAcceptanceBindingId:"AB",accesses:[rwAccess],
-});
-assert.equal(liveRw.businessAuthorityStates.get("RW_CURRENT_STATE\u0000ENPLAS"),"ACTIVE");
-const blockedRw=await loadLiveGateContext(new FakeReader("baselineDraft"),{
-  taskId:"ROLLING_WEDGE_INVESTMENT",currentCutoverId:"CUT",currentRegistryFileId:REG,currentRegistrySnapshotId:"RS1",currentRegistryFingerprint:"RF",currentAcceptanceBindingId:"AB",accesses:[rwAccess],
-});
-assert.equal(blockedRw.businessAuthorityStates.get("RW_CURRENT_STATE\u0000ENPLAS"),"DRAFT");
+const rwInput={
+  taskId:"ROLLING_WEDGE_INVESTMENT" as const,currentCutoverId:"CUT",
+  currentRegistryFileId:REG,currentRegistrySnapshotId:"RS1",currentRegistryFingerprint:"RF",
+  currentAcceptanceBindingId:"AB",currentCutoverControlFileId:REPOSITORY_CUTOVER_CONTROL_ID,
+  currentCutoverFenceState:"RELEASED",currentActivationEpoch:"10",
+  currentManifestId:"RWMS",currentManifestFingerprint:"RWMF",
+  rwNonArchiveControlTab:"RW_Non_Archive_Control",accesses:[rwAccess],
+};
+const rwReader=new FakeReader();
+const liveRw=await loadLiveGateContext(rwReader,rwInput);
+assert.equal(liveRw.businessAuthorityStates.get("RW_CURRENT_STATE\\u0000ENPLAS"),"ACTIVE");
+assert.equal(liveRw.nonArchiveDatasetIds.size,6);
+assert.equal(liveRw.pruneFenceIndexAvailable,false);
+assert.equal(liveRw.migrationFenceActive,false);
+for(const archivedTable of ["Acceptance_Results","Runtime_Component_Projection",
+ "MIGRATION_WRITE_FENCE","Archive_Prune_Fence_Index","Archive_Transaction_Registry",
+ "Archive_Transaction_Members","Index_Metadata","Shard_Routes","Record_Locators"])
+  assert.equal(rwReader.sheetReads.some(x=>x.endsWith(":"+archivedTable)),false,archivedTable);
+const blockedRw=await loadLiveGateContext(new FakeReader("baselineDraft"),rwInput);
+assert.equal(blockedRw.businessAuthorityStates.get("RW_CURRENT_STATE\\u0000ENPLAS"),"DRAFT");
+const fencedRw=await loadLiveGateContext(new FakeReader("rwFenceActive"),rwInput);
+assert.equal(fencedRw.migrationFenceActive,true);
+for(const fault of ["rwArchiveEnabled","rwControlUnavailable","rwCapabilityBad","rwEpochBad"] as const)
+  await assert.rejects(()=>loadLiveGateContext(new FakeReader(fault),rwInput));
+await assert.rejects(()=>loadLiveGateContext(new FakeReader(),{...rwInput,rwNonArchiveControlTab:undefined}),
+  /RW_NON_ARCHIVE_CONTROL_UNREGISTERED/);
+await assert.rejects(()=>loadLiveGateContext(new FakeReader(),{...rwInput,currentCutoverFenceState:"UNKNOWN"}),
+  /RW_CUTOVER_FENCE_UNRESOLVED/);
+const checked=await loadLiveGateContext(new FakeReader(),rwInput);
+const rwGate={...cp.gate,taskId:"ROLLING_WEDGE_INVESTMENT",manifestId:"RWMS",
+  manifestRegistrySnapshotId:"RS1",manifestRegistryFingerprint:"RF",
+  currentRegistrySnapshotId:"RS1",currentRegistryFingerprint:"RF",
+  accesses:[{...rwAccess,physicalContractFingerprint:"rw-schema",businessAuthorityState:"ACTIVE",
+    writerScopes:[{writerId:"MONITOR",operations:new Set(["CONDITIONAL_CURRENT_STATE"]),fields:null}]}],
+  migrationFenceActive:checked.migrationFenceActive,
+  nonArchiveDatasetIds:checked.nonArchiveDatasetIds,
+  pruneFenceIndexAvailable:checked.pruneFenceIndexAvailable,
+  pruneFencedKeys:checked.pruneFencedKeys,startedPruneKeys:checked.startedPruneKeys,
+  archivedIdentityKeys:checked.archivedIdentityKeys};
+const rwReadRequest={taskId:"ROLLING_WEDGE_INVESTMENT",callerIdentity:"MONITOR",manifestId:"RWMS",
+ datasetId:"RW_CURRENT_STATE",instanceId:"ENPLAS",logicalMember:"D1_RW",
+ operation:"READ" as const};
+const rwWriteRequest={...rwReadRequest,operation:"WRITE" as const,writeOperation:"CONDITIONAL_CURRENT_STATE",
+ fields:new Set<string>()};
+assert.equal(authorizePersistence(rwGate,rwReadRequest).instanceId,"ENPLAS");
+assert.equal(authorizePersistence(rwGate,rwWriteRequest).instanceId,"ENPLAS");
+assert.throws(()=>authorizePersistence({...rwGate,nonArchiveDatasetIds:new Set()},rwReadRequest),
+  /PRUNE_FENCE_UNAVAILABLE/);
+assert.throws(()=>authorizePersistence({...rwGate,migrationFenceActive:true},rwWriteRequest),
+  /MIGRATION_WRITE_FENCE_ACTIVE/);
+assert.throws(()=>authorizePersistence(rwGate,{...rwReadRequest,callerIdentity:"COLLECTOR"}),
+  /READ_NOT_AUTHORIZED/);
+assert.throws(()=>authorizePersistence(rwGate,{...rwWriteRequest,callerIdentity:"COLLECTOR"}),
+  /WRITE_SCOPE_VIOLATION/);
 
 console.log("workos_control_plane_loader_validation: PASS");
