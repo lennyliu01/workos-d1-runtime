@@ -23,6 +23,9 @@ interface D1PreparedStatement {
 interface CandidateEnv {
   DB: { prepare(query: string): D1PreparedStatement };
   RUNTIME_SECRET?: string;
+  RW_AUTHORITY_PROJECTION?: string;
+  RW_AUTHORITY_EPOCH?: string;
+  RW_MANIFEST_FINGERPRINT?: string;
 }
 
 interface DatasetControl {
@@ -49,6 +52,11 @@ interface ReadRequest {
   dataset_id: string;
   instance_id: string;
   selector: ReadSelector;
+  authority_epoch?: string;
+  manifest_fingerprint?: string;
+  read_purpose?: "INITIAL_BASELINE_READBACK";
+  expected_version?: number;
+  bootstrap_idempotency_key?: string;
 }
 
 interface WriteRequest {
@@ -63,6 +71,10 @@ interface WriteRequest {
   payload: unknown;
   record_key?: string;
   expected_version?: number;
+  authority_epoch?: string;
+  manifest_fingerprint?: string;
+  write_operation?: "INITIAL_BASELINE";
+  fields?: string[];
 }
 
 interface AppendRow {
@@ -236,7 +248,8 @@ function validRead(body: unknown): body is ReadRequest {
   const r = body as Record<string, unknown>;
   return onlyKeys(r, [
     "execution_surface", "trigger_mode", "task_id", "caller_identity", "operation",
-    "dataset_id", "instance_id", "selector",
+    "dataset_id", "instance_id", "selector", "authority_epoch", "manifest_fingerprint",
+    "read_purpose", "expected_version", "bootstrap_idempotency_key",
   ]) &&
     optionalExecutionMetadata(r) &&
     r.operation === "READ" &&
@@ -244,7 +257,12 @@ function validRead(body: unknown): body is ReadRequest {
     typeof r.caller_identity === "string" &&
     typeof r.dataset_id === "string" &&
     typeof r.instance_id === "string" &&
-    validSelector(r.selector);
+    validSelector(r.selector) &&
+    (r.authority_epoch === undefined || safeToken(r.authority_epoch, 128)) &&
+    (r.manifest_fingerprint === undefined || safeToken(r.manifest_fingerprint, 128)) &&
+    (r.read_purpose === undefined || r.read_purpose === "INITIAL_BASELINE_READBACK") &&
+    (r.expected_version === undefined || r.expected_version === 1) &&
+    (r.bootstrap_idempotency_key === undefined || safeToken(r.bootstrap_idempotency_key, 128));
 }
 
 function validWrite(body: unknown): body is WriteRequest {
@@ -253,6 +271,7 @@ function validWrite(body: unknown): body is WriteRequest {
   return onlyKeys(r, [
     "execution_surface", "trigger_mode", "task_id", "caller_identity", "operation",
     "dataset_id", "instance_id", "idempotency_key", "payload", "record_key", "expected_version",
+    "authority_epoch", "manifest_fingerprint", "write_operation", "fields",
   ]) &&
     optionalExecutionMetadata(r) &&
     r.operation === "WRITE" &&
@@ -261,13 +280,96 @@ function validWrite(body: unknown): body is WriteRequest {
     typeof r.dataset_id === "string" &&
     typeof r.instance_id === "string" &&
     safeToken(r.idempotency_key, 128) &&
-    Object.prototype.hasOwnProperty.call(r, "payload");
+    Object.prototype.hasOwnProperty.call(r, "payload") &&
+    (r.authority_epoch === undefined || safeToken(r.authority_epoch, 128)) &&
+    (r.manifest_fingerprint === undefined || safeToken(r.manifest_fingerprint, 128)) &&
+    (r.write_operation === undefined || r.write_operation === "INITIAL_BASELINE") &&
+    (r.fields === undefined || (Array.isArray(r.fields) && r.fields.length <= 128 &&
+      new Set(r.fields).size === r.fields.length &&
+      r.fields.every((x: unknown) => safeToken(x, 128))));
 }
 
-function resolveControl(body: ReadRequest | WriteRequest): DatasetControl | Response {
+
+interface DynamicBinding {
+  dataset_id: string; instance_id: string;
+  business_state: "DRAFT" | "ACTIVE";
+  readers: string[];
+  writers: Array<{writer_id: string; operations: string[]}>;
+  bootstrap?: {fields: string[]; idempotency_key: string};
+}
+function dynamicInstanceDecision(body: ReadRequest | WriteRequest, env: CandidateEnv): Response | null {
+  // A projection is accepted only if a separate publisher-controlled epoch and
+  // manifest fingerprint match. Caller claims cannot register an instance.
+  if (!env.RW_AUTHORITY_PROJECTION || !env.RW_AUTHORITY_EPOCH ||
+      !env.RW_MANIFEST_FINGERPRINT) return fail("CONTROL_DENIED", 403);
+  let raw: unknown;
+  try { raw = JSON.parse(env.RW_AUTHORITY_PROJECTION); } catch { return fail("CONTROL_DENIED", 403); }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return fail("CONTROL_DENIED", 403);
+  const p = raw as Record<string, unknown>;
+  if (p.state !== "ACTIVE" || p.authority_epoch !== env.RW_AUTHORITY_EPOCH ||
+      p.manifest_fingerprint !== env.RW_MANIFEST_FINGERPRINT ||
+      body.authority_epoch !== p.authority_epoch ||
+      body.manifest_fingerprint !== p.manifest_fingerprint ||
+      !Array.isArray(p.bindings) || p.bindings.length > 1000)
+    return fail("CONTROL_DENIED", 403);
+  const matches = (p.bindings as DynamicBinding[]).filter(x =>
+    x && x.dataset_id === body.dataset_id && x.instance_id === body.instance_id);
+  if (matches.length !== 1) return fail("CONTROL_DENIED", 403);
+  const b = matches[0];
+  if (!Array.isArray(b.readers) || !Array.isArray(b.writers) ||
+      !["ACTIVE","DRAFT"].includes(b.business_state)) return fail("CONTROL_DENIED", 403);
+  if (b.business_state === "ACTIVE") {
+    if (body.operation === "READ")
+      return b.readers.includes(body.caller_identity) && !body.read_purpose &&
+        body.bootstrap_idempotency_key === undefined ? null : fail("READ_NOT_AUTHORIZED", 403);
+    const w = b.writers.filter(x => x.writer_id === body.caller_identity);
+    return w.length === 1 && Array.isArray(w[0].operations) &&
+      w[0].operations.includes("ORDINARY_WRITE") && body.write_operation === undefined ?
+      null : fail("WRITE_NOT_AUTHORIZED", 403);
+  }
+  if (body.dataset_id !== "RW_CURRENT_STATE" || body.caller_identity !== "Rolling_Wedge_Workflow" ||
+      !b.bootstrap || !Array.isArray(b.bootstrap.fields) ||
+      !safeToken(b.bootstrap.idempotency_key, 128))
+    return fail("BUSINESS_AUTHORITY_NOT_READY", 403);
+  const grant = b.bootstrap;
+  if (body.operation === "READ")
+    return body.read_purpose === "INITIAL_BASELINE_READBACK" &&
+      body.selector.kind === "CURRENT" && body.expected_version === 1 &&
+      body.bootstrap_idempotency_key === grant.idempotency_key &&
+      b.readers.includes(body.caller_identity) ? null : fail("BUSINESS_AUTHORITY_NOT_READY", 403);
+  if (body.write_operation !== "INITIAL_BASELINE" || body.expected_version !== 0 ||
+      body.record_key !== undefined || body.idempotency_key !== grant.idempotency_key ||
+      !body.fields || body.fields.length !== grant.fields.length ||
+      !body.fields.every(x => grant.fields.includes(x)) ||
+      !b.writers.some(x => x.writer_id === body.caller_identity &&
+        Array.isArray(x.operations) && x.operations.includes("INITIAL_BASELINE")))
+    return fail("BUSINESS_AUTHORITY_NOT_READY", 403);
+  const v = body.payload;
+  if (!v || typeof v !== "object" || Array.isArray(v)) return fail("BOOTSTRAP_PAYLOAD_INVALID",400);
+  const data = v as Record<string,unknown>;
+  if (Object.keys(data).length !== grant.fields.length ||
+      !Object.keys(data).every(x => grant.fields.includes(x)) ||
+      data.Company_ID !== body.instance_id || data.Instance_ID !== body.instance_id ||
+      data.Belief_State_ID !== null || data.Valuation_State_ID !== null ||
+      data.Decision_State_ID !== null || data.Scenario_Probabilities !== null ||
+      data.Confidence !== null || data.Next_Reality_Watch_Accepted !== false ||
+      data.Material_Capital_Commitment_Accepted !== false ||
+      data.Production_D1_Initialized !== false ||
+      typeof data.Base_Source_Source_Status !== "string" ||
+      !data.Base_Source_Source_Status.startsWith("SOURCE_STATUS: ACCEPTED"))
+    return fail("BOOTSTRAP_PAYLOAD_INVALID",400);
+  return null;
+}
+
+function resolveControl(body: ReadRequest | WriteRequest, env: CandidateEnv): DatasetControl | Response {
   const control = WORKOS_DATASETS[body.dataset_id];
   if (!control) return fail("DATASET_NOT_REGISTERED", 403);
-  if (control.taskId !== body.task_id || !control.instances.has(body.instance_id)) return fail("CONTROL_DENIED", 403);
+  if (control.taskId !== body.task_id) return fail("CONTROL_DENIED", 403);
+  if (!control.instances.has(body.instance_id)) {
+    if (control.taskId !== "ROLLING_WEDGE_INVESTMENT") return fail("CONTROL_DENIED",403);
+    const denied = dynamicInstanceDecision(body, env);
+    if (denied) return denied;
+  }
   if (body.operation === "READ") {
     if (!control.readers.has(body.caller_identity)) return fail("READ_NOT_AUTHORIZED", 403);
   } else if (!control.writers.has(body.caller_identity)) {
@@ -367,7 +469,7 @@ function currentSuccess(body: WriteRequest, control: DatasetControl, row: Curren
 }
 
 async function handleRead(body: ReadRequest, env: CandidateEnv): Promise<Response> {
-  const resolved = resolveControl(body);
+  const resolved = resolveControl(body, env);
   if (resolved instanceof Response) return resolved;
   const b = base(body, resolved);
 
@@ -377,6 +479,10 @@ async function handleRead(body: ReadRequest, env: CandidateEnv): Promise<Respons
     try { row = await current(env, body.dataset_id, body.instance_id); }
     catch { return fail("READ_FAILED", 500); }
     if (!row) return fail("NOT_FOUND", 404);
+    if (body.read_purpose === "INITIAL_BASELINE_READBACK" &&
+        (row.version !== 1 || row.previous_version !== 0 ||
+         row.idempotency_key !== body.bootstrap_idempotency_key))
+      return fail("BOOTSTRAP_READBACK_MISMATCH", 409);
     try {
       return Response.json({
         status: "SUCCESS", ...b, selector: "CURRENT", version: row.version,
@@ -565,7 +671,7 @@ async function handleCurrentWrite(body: WriteRequest, control: DatasetControl, e
 }
 
 async function handleWrite(body: WriteRequest, env: CandidateEnv): Promise<Response> {
-  const resolved = resolveControl(body);
+  const resolved = resolveControl(body, env);
   if (resolved instanceof Response) return resolved;
   const payloadJson = serializePayload(body.payload);
   if (payloadJson === null) return fail("INVALID_PAYLOAD", 400);
