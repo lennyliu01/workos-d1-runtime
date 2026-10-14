@@ -199,7 +199,7 @@ const rwInput={
 };
 const rwReader=new FakeReader();
 const liveRw=await loadLiveGateContext(rwReader,rwInput);
-assert.equal(liveRw.businessAuthorityStates.get("RW_CURRENT_STATE\\u0000ENPLAS"),"ACTIVE");
+assert.equal(liveRw.businessAuthorityStates.get("RW_CURRENT_STATE\u0000ENPLAS"),"ACTIVE");
 assert.equal(liveRw.nonArchiveDatasetIds.size,6);
 assert.equal(liveRw.pruneFenceIndexAvailable,false);
 assert.equal(liveRw.migrationFenceActive,false);
@@ -208,7 +208,7 @@ for(const archivedTable of ["Acceptance_Results","Runtime_Component_Projection",
  "Archive_Transaction_Members","Index_Metadata","Shard_Routes","Record_Locators"])
   assert.equal(rwReader.sheetReads.some(x=>x.endsWith(":"+archivedTable)),false,archivedTable);
 const blockedRw=await loadLiveGateContext(new FakeReader("baselineDraft"),rwInput);
-assert.equal(blockedRw.businessAuthorityStates.get("RW_CURRENT_STATE\\u0000ENPLAS"),"DRAFT");
+assert.equal(blockedRw.businessAuthorityStates.get("RW_CURRENT_STATE\u0000ENPLAS"),"DRAFT");
 const fencedRw=await loadLiveGateContext(new FakeReader("rwFenceActive"),rwInput);
 assert.equal(fencedRw.migrationFenceActive,true);
 for(const fault of ["rwArchiveEnabled","rwControlUnavailable","rwCapabilityBad","rwEpochBad"] as const)
