@@ -252,6 +252,9 @@ export async function loadPublishedBootstrapGrants(
   const seen=new Set<string>();
   for (const raw of values.slice(1).filter(row=>row.some(Boolean))) {
     const r=Object.fromEntries(required.map((col,i)=>[col,raw[i]??""]));
+    const key=`${r.Dataset_ID}\u0000${r.Instance_ID}`;
+    if (seen.has(key)) throw new Error("BOOTSTRAP_PROJECTION_DUPLICATE");
+    seen.add(key);
     if (!["ACTIVE","REVOKED","DISABLED"].includes(r.Grant_State))
       throw new Error("BOOTSTRAP_PROJECTION_STATE_INVALID");
     if (r.Grant_State!=="ACTIVE") continue;
@@ -272,9 +275,6 @@ export async function loadPublishedBootstrapGrants(
         fields.some(x=>x.endsWith("__REVISER_OWNED")) ||
         fields.some(x=>!/^[A-Za-z0-9._:-]{1,128}$/.test(x)))
       throw new Error("BOOTSTRAP_PROJECTION_UNTRUSTED_OR_DRIFT");
-    const key=`${r.Dataset_ID}\u0000${r.Instance_ID}`;
-    if (seen.has(key)) throw new Error("BOOTSTRAP_PROJECTION_DUPLICATE");
-    seen.add(key);
     map.set(key,{
       taskId:r.Task_ID,manifestId:r.Manifest_ID,manifestFingerprint:r.Manifest_Fingerprint,
       authorityEpoch:r.Authority_Epoch,datasetId:r.Dataset_ID,instanceId:r.Instance_ID,
