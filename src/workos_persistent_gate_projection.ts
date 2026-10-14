@@ -248,7 +248,8 @@ export function authorizePersistence(
   const operation = request.writeOperation;
   if (!operation) throw new Error("WRITE_SCOPE_VIOLATION:operation missing");
   const scope = entry.writerScopes.find((candidate) => candidate.writerId === request.callerIdentity);
-  if (!scope || !scope.operations.has(operation)) throw new Error("WRITE_SCOPE_VIOLATION");
+  const isBootstrap = entry.dynamicInstance && entry.businessAuthorityState === "DRAFT" && allowDraft(snapshot, entry, request);
+  if (!scope || (!isBootstrap && !scope.operations.has(operation))) throw new Error("WRITE_SCOPE_VIOLATION");
   const fields = request.fields ?? new Set<string>();
   if (scope.fields !== null && [...fields].some((field) => !scope.fields!.has(field))) {
     throw new Error("WRITE_SCOPE_VIOLATION:field scope");
