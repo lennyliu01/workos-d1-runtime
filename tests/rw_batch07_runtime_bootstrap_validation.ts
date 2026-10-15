@@ -3,11 +3,36 @@ import {handleWorkOsCandidatePersistence} from "../src/workos_candidate.js";
 import {authorizePersistence, WORKOS_D1_GATE_IMPLEMENTATION_ID,WORKOS_D1_GATE_IMPLEMENTATION_VERSION,ACCEPTED_GATE_CONFIG_FINGERPRINT,type GateProjectionSnapshot, type ManifestAccessRow} from "../src/workos_persistent_gate_projection.js";
 import {loadPublishedBootstrapGrants} from "../src/workos_control_plane_loader.js";
 import {initializeBaselineWithReadback,projectRWInitialBaselineWire} from "../src/workos_initial_baseline_candidate.js";
+import {RW_CURRENT_STATE_FIELDS,FROZEN_RESEARCH_FIELDS,FROZEN_SOURCE_FIELDS,canonicalRWJson,validateRWInitialBaselineWire} from "../src/rw_current_state_wire.js";
 
 const ids=["DSG","DOL","WSP","GIBA","NA","ENB","ATD"];
-const fields=["Company_ID","Instance_ID","Base_Source_Source_Status","Belief_State_ID","Valuation_State_ID","Decision_State_ID","Scenario_Probabilities","Confidence","Next_Reality_Watch_Accepted","Material_Capital_Commitment_Accepted","Production_D1_Initialized"];
+const fields=[...RW_CURRENT_STATE_FIELDS];
 const key=(id:string)=>`RW_BATCH_07_20261014.${id}.INITIAL_BASELINE`;
-const payload=(id:string)=>({Company_ID:id,Instance_ID:id,Base_Source_Source_Status:"SOURCE_STATUS: ACCEPTED; research evidence only",Belief_State_ID:null,Valuation_State_ID:null,Decision_State_ID:null,Scenario_Probabilities:null,Confidence:null,Next_Reality_Watch_Accepted:false,Material_Capital_Commitment_Accepted:false,Production_D1_Initialized:false});
+function researchPayload(id:string): Record<string,unknown> {
+ return {
+  Company_ID:id,Instance_ID:id,Security_Ticker:id==="GIBA"?"GIB.A":id,
+  Exchange:"TSX",Identity:id==="GIBA"?"CGI Inc.":`Company ${id}`,
+  Base_Source_Materials:"https://docs.google.com/document/d/accepted/edit",
+  Base_Source_Source_Status:"SOURCE_STATUS: ACCEPTED; research evidence only",
+  Frozen_Baseline_Candidate:"https://docs.google.com/document/d/frozen/edit",
+  Frozen_Baseline_Status:"FROZEN_CANDIDATE",
+  Predecessor_Run_ID:`RW_B_${id}_BASELINE_20261014_01`,
+  Model2_Research_Version:`CA_TSX_MODEL2_${id}_20261013_01`,
+  Company_Specific_Decision_Overrides:"NONE_PROPOSED",
+  Belief_State_ID:null,Scenario_Probabilities:null,Confidence:null,
+  Valuation_State_ID:null,Decision_State_ID:null,
+  Next_Reality_Watch_Accepted:false,Material_Capital_Commitment_Accepted:false,
+  Production_D1_Initialized:false,
+  FREEZE_IDENTITY_AND_RESEARCH_CUTOFF:`frozen ${id}`,
+  RESEARCH_OBJECTIVE:`objective ${id}`,WEDGE_DEFINITION:`wedge ${id}`,
+  KEY_CAUSAL_MECHANISMS:`causal ${id}`,WHAT_MUST_BE_PROVEN:`proof ${id}`,
+  FALSIFIERS:`falsifiers ${id}`,
+  BEAR_BASE_WEDGE_WORKS_FROZEN_SCENARIO_DEFINITIONS:`scenarios ${id}`,
+  MATERIAL_CAPITAL_COMMITMENT_CANDIDATE__REVISER_OWNED:"unaccepted commitment research",
+  NEXT_REALITY_WATCH_CANDIDATE__REVISER_OWNED:"unaccepted watch research",
+ };
+}
+const payload=(id:string)=>projectRWInitialBaselineWire(researchPayload(id));
 const entries=ids.map(id=>({dataset_id:"RW_CURRENT_STATE",instance_id:id,business_state:"DRAFT",readers:["Rolling_Wedge_Workflow"],writers:[{writer_id:"Rolling_Wedge_Workflow",operations:["INITIAL_BASELINE"]}],bootstrap:{fields,idempotency_key:key(id)}}));
 const env={RUNTIME_SECRET:"test-isolated-secret",RW_AUTHORITY_PROJECTION:JSON.stringify({state:"ACTIVE",authority_epoch:"E11",manifest_fingerprint:"MF11",bindings:entries}),RW_AUTHORITY_EPOCH:"E11",RW_MANIFEST_FINGERPRINT:"MF11"}; // adversarial legacy keys deliberately ignored
 
@@ -107,6 +132,7 @@ for(const id of ids){
  const replay=await send(write(id));assert.equal(replay.status,200);assert.equal(replay.body.replayed,true);checks++;
 }
 assert.equal(dbRecords.size,7);
+for(const id of ids){const row=dbRecords.get(`RW_CURRENT_STATE:${id}`)!;assert.equal(row.version,1);assert.deepEqual(JSON.parse(row.payload_json),payload(id));checks++;}
 // A forged environment projection cannot authorize without the trusted source.
 const noSource=await handleWorkOsCandidatePersistence(
   new Request("https://isolated.invalid/candidate/workos-persistence",{
@@ -143,6 +169,10 @@ await fail({...write("DSG"),idempotency_key:"bad-key"});checks++;
 await fail({...write("DSG"),manifest_fingerprint:"wrong"});checks++;
 await fail({...write("DSG"),authority_epoch:"E10"});checks++;
 await fail({...write("DSG"),payload:{...payload("DSG"),Belief_State_ID:"ACCEPTED"}});checks++;
+await fail({...write("DSG"),payload:{...payload("DSG"),Structured_State_Content:"not-json"}});checks++;
+await fail({...write("DSG"),payload:{...payload("DSG"),Currency:23}});checks++;
+await fail({...write("DSG"),payload:{...payload("DSG"),Company_ID:"DOL"}});checks++;
+await fail({...write("DSG"),payload:{...payload("DSG"),Extraneous_Field:"bad"}});checks++;
 await fail({...read("DSG"),read_purpose:undefined});checks++;
 await fail({...read("DSG"),caller_identity:"MONITOR"});checks++;
 await fail({...read("DSG"),expected_version:2});checks++;
@@ -253,42 +283,49 @@ assert.equal(missing.size,0);checks++;
 await assert.rejects(()=>loadPublishedBootstrapGrants(grantReader as any,"accepted-manifest-file",manifestMeta,"E10",[entry]),/BOOTSTRAP_PROJECTION_UNTRUSTED_OR_DRIFT/);checks++;
 await assert.rejects(()=>loadPublishedBootstrapGrants({readDriveText:async()=>"",readSheet:async()=>[grantHeader,grantRow,grantRow]} as any,"accepted-manifest-file",manifestMeta,"E11",[entry]),/BOOTSTRAP_PROJECTION_DUPLICATE/);checks++;
 
-const sourceResearch:Record<string,unknown>={
- Company_ID:"GIBA",Instance_ID:"GIBA",Security_Ticker:"GIB.A",Exchange:"TSX",
- Identity:"CGI Inc.",Base_Source_Materials:"https://docs.google.com/document/d/accepted/edit",
- Base_Source_Source_Status:"SOURCE_STATUS: ACCEPTED; research evidence only",
- Frozen_Baseline_Candidate:"https://docs.google.com/document/d/frozen/edit",
- Frozen_Baseline_Status:"FROZEN_CANDIDATE",
- Predecessor_Run_ID:"RW_B_GIBA_BASELINE_20261014_01",
- Model2_Research_Version:"CA_TSX_MODEL2_GIBA_20261013_01",
- Company_Specific_Decision_Overrides:"NONE_PROPOSED",
- Belief_State_ID:null,Scenario_Probabilities:null,Confidence:null,
- Valuation_State_ID:null,Decision_State_ID:null,
- Next_Reality_Watch_Accepted:false,Material_Capital_Commitment_Accepted:false,
- Production_D1_Initialized:false,FREEZE_IDENTITY_AND_RESEARCH_CUTOFF:"frozen",
- RESEARCH_OBJECTIVE:"objective",WEDGE_DEFINITION:"wedge",
- KEY_CAUSAL_MECHANISMS:"causal",WHAT_MUST_BE_PROVEN:"proof",
- FALSIFIERS:"falsifiers",BEAR_BASE_WEDGE_WORKS_FROZEN_SCENARIO_DEFINITIONS:"scenarios",
- MATERIAL_CAPITAL_COMMITMENT_CANDIDATE__REVISER_OWNED:"unaccepted commitment research",
- NEXT_REALITY_WATCH_CANDIDATE__REVISER_OWNED:"unaccepted watch research",
-};
+const sourceResearch=researchPayload("GIBA");
 const projected=projectRWInitialBaselineWire(sourceResearch);
 assert.equal(Object.keys(sourceResearch).length,29);
-assert.equal(Object.keys(projected).length,27);
-assert.equal(projected.Security_Ticker,"GIB.A");
-assert.equal(projected.MATERIAL_CAPITAL_COMMITMENT_CANDIDATE__REVISER_OWNED,undefined);
-assert.equal(projected.NEXT_REALITY_WATCH_CANDIDATE__REVISER_OWNED,undefined);
-assert.equal(sourceResearch.MATERIAL_CAPITAL_COMMITMENT_CANDIDATE__REVISER_OWNED,"unaccepted commitment research");
+assert.deepEqual(Object.keys(projected),fields);
+assert.equal(projected.Ticker,"GIB.A");
+assert.equal(projected.Currency,null);
+assert.equal(projected.State_As_Of,null);
+assert.equal(projected.Company_Name,"CGI Inc.");
+const nested=JSON.parse(projected.Structured_State_Content as string) as Record<string,Record<string,string>>;
+assert.deepEqual(Object.keys(nested.research).sort(),[...FROZEN_RESEARCH_FIELDS].sort());
+assert.deepEqual(Object.keys(nested.source).sort(),[...FROZEN_SOURCE_FIELDS].sort());
+for(const name of FROZEN_RESEARCH_FIELDS)assert.equal(nested.research[name],sourceResearch[name]);
+for(const name of FROZEN_SOURCE_FIELDS)assert.equal(nested.source[name],sourceResearch[name]);
+assert.equal(JSON.stringify(projected).includes("REVISER_OWNED"),false);
+assert.equal(JSON.stringify(projected).includes("Production_D1_Initialized"),false);
+assert.equal(JSON.stringify(projected).includes("Belief_State_ID"),false);
+assert.equal(projected.Structured_State_Content,canonicalRWJson(nested));
+assert.ok(validateRWInitialBaselineWire(projected,"GIBA"));
 assert.throws(()=>projectRWInitialBaselineWire({...sourceResearch,Unexpected_Field:"untrusted"}),/RESEARCH_PAYLOAD_SCHEMA_MISMATCH/);
 assert.throws(()=>projectRWInitialBaselineWire({...sourceResearch,Belief_State_ID:"unaccepted"}),/RESEARCH_PAYLOAD_OWNERSHIP_NOT_ACCEPTED/);
 assert.throws(()=>projectRWInitialBaselineWire({...sourceResearch,Company_ID:"WRONG"}),/RESEARCH_PAYLOAD_OWNERSHIP_NOT_ACCEPTED/);
-checks+=9;
-// A fully converted 27-field payload cannot be admitted by an 11-field grant.
+assert.throws(()=>projectRWInitialBaselineWire({...sourceResearch,KEY_CAUSAL_MECHANISMS:null}),/RESEARCH_PAYLOAD_OWNERSHIP_NOT_ACCEPTED/);
+assert.equal(validateRWInitialBaselineWire({...projected,Extra:"bad"},"GIBA"),false);
+assert.equal(validateRWInitialBaselineWire({...projected,Company_ID:"WRONG"},"GIBA"),false);
+assert.equal(validateRWInitialBaselineWire({...projected,Currency:"CAD"},"GIBA"),false);
+assert.equal(validateRWInitialBaselineWire({...projected,State_As_Of:"2026-10-13"},"GIBA"),false);
+assert.equal(validateRWInitialBaselineWire({...projected,Structured_State_Content:"{bad"},"GIBA"),false);
+assert.equal(validateRWInitialBaselineWire({...projected,Structured_State_Content:JSON.stringify({...nested,Production_D1_Initialized:false})},"GIBA"),false);
+assert.equal(validateRWInitialBaselineWire({...projected,Structured_State_Content:JSON.stringify({...nested,source:{...nested.source,REVISER_OWNED:"bypass"}})},"GIBA"),false);
+checks+=26;
+// A former 27-field grant must not authorize the current eight-field wire.
+const oldFields=new Set(["Company_ID","Instance_ID","Base_Source_Source_Status",
+ "Belief_State_ID","Scenario_Probabilities","Confidence","Valuation_State_ID",
+ "Decision_State_ID","Next_Reality_Watch_Accepted",
+ "Material_Capital_Commitment_Accepted","Production_D1_Initialized"]);
+const wrongGrant={...syntheticGrants.get("RW_CURRENT_STATE\\u0000GIBA")!,fields:oldFields};
 await assert.rejects(()=>initializeBaselineWithReadback(
-  {task:{taskId:"ROLLING_WEDGE_INVESTMENT"},gate:trustedGate} as any,
-  "GIBA",projected,"test-isolated-secret",boundFetch),
-  /BOOTSTRAP_GRANT_OR_FIELDS_MISMATCH/);checks++;
-
+ {task:{taskId:"ROLLING_WEDGE_INVESTMENT"},
+  gate:{...trustedGate,bootstrapGrants:new Map([
+   ...syntheticGrants,["RW_CURRENT_STATE\\u0000GIBA",wrongGrant],
+  ])}} as any,
+ "GIBA",projected,"test-isolated-secret",boundFetch),
+ /BOOTSTRAP_GRANT_OR_FIELDS_MISMATCH/);checks++;
 
 const eleventh = "RW_VIRTUAL_11";
 const virtualEntry: ManifestAccessRow = {...dynamicAccesses[0],instanceId:eleventh};
@@ -323,6 +360,9 @@ const vr=await futureSend(read(eleventh),virtualGate);
 assert.equal(vr.status,200,JSON.stringify(vr.body));
 assert.deepEqual(vr.body.payload,payload(eleventh));checks++;
 assert.equal(dbRecords.size,11);
+for(const id of [...ids,eleventh])assert.equal(dbRecords.get(`RW_CURRENT_STATE:${id}`)?.version,1);
+const differentReplay=await futureSend({...write(eleventh),payload:{...payload(eleventh),Company_Name:"forged"}},virtualGate);
+assert.notEqual(differentReplay.status,200);assert.equal(dbRecords.size,11);checks++;
 assert.equal(trustedGate.gateImplementationId,"WORKOS_D1_PERSISTENT_GATE");checks++;
 assert.equal(trustedGate.gateImplementationVersion,"1.0.0-candidate");checks++;
 assert.throws(()=>authorizePersistence({...trustedGate,gateImplementationVersion:"unapproved"},{
