@@ -318,11 +318,11 @@ const oldFields=new Set(["Company_ID","Instance_ID","Base_Source_Source_Status",
  "Belief_State_ID","Scenario_Probabilities","Confidence","Valuation_State_ID",
  "Decision_State_ID","Next_Reality_Watch_Accepted",
  "Material_Capital_Commitment_Accepted","Production_D1_Initialized"]);
-const wrongGrant={...syntheticGrants.get("RW_CURRENT_STATE\\u0000GIBA")!,fields:oldFields};
+const wrongGrant={...syntheticGrants.get("RW_CURRENT_STATE\u0000GIBA")!,fields:oldFields};
 await assert.rejects(()=>initializeBaselineWithReadback(
  {task:{taskId:"ROLLING_WEDGE_INVESTMENT"},
   gate:{...trustedGate,bootstrapGrants:new Map([
-   ...syntheticGrants,["RW_CURRENT_STATE\\u0000GIBA",wrongGrant],
+   ...syntheticGrants,["RW_CURRENT_STATE\u0000GIBA",wrongGrant],
   ])}} as any,
  "GIBA",projected,"test-isolated-secret",boundFetch),
  /BOOTSTRAP_GRANT_OR_FIELDS_MISMATCH/);checks++;
