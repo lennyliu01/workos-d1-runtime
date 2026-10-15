@@ -16,11 +16,20 @@ interface LiveContextInput {
   currentRegistrySnapshotId: string;
   currentRegistryFingerprint: string;
   currentAcceptanceBindingId: string;
+  // Trusted only when sourced by loadControlPlane from singleton + ACTIVE Manifest.
+  currentCutoverControlFileId?: string;
+  currentCutoverFenceState?: string;
+  currentActivationEpoch?: string;
+  currentManifestId?: string;
+  currentManifestFingerprint?: string;
+  rwNonArchiveControlTab?: string;
   accesses: readonly ManifestAccessRow[];
 }
 
 export interface LiveGateContext {
   migrationFenceActive: boolean;
+  /** Only populated after verifying every RW Dataset's ACTIVE_ONLY contract. */
+  nonArchiveDatasetIds: ReadonlySet<string>;
   pruneFenceIndexAvailable: boolean;
   pruneFencedKeys: ReadonlySet<string>;
   startedPruneKeys: ReadonlySet<string>;
@@ -93,7 +102,7 @@ export async function loadLiveGateContext(reader:ExactControlPlaneReader,input:L
     throw new Error("LIVE_GATE_CONTEXT_STALE:REGISTRY_METADATA");
   const rs=rows(resV,["Dataset_ID","Instance_Projection_Mode","Exact_File_ID","Exact_Member_Name","Parent_Instance_Registry_ID","Projection_Fingerprint"],"RESOURCE_PROJECTION");
   const cs=rows(contractsV,["Registry_Snapshot_ID","Dataset_ID","Registry_Contract_Fingerprint","Registry_Snapshot_Fingerprint"],"CONTRACT_FINGERPRINTS");
-  const dcs=rows(datasetContractsV,["Dataset_ID","Contract_Status","Registry_Contract_Fingerprint"],"DATASET_CONTRACTS");
+  const dcs=rows(datasetContractsV,["Dataset_ID","Task_ID","Contract_Status","Registry_Contract_Fingerprint","Archive_Enabled","Historical_Resolution_Mode"],"DATASET_CONTRACTS");
 
   const physical=new Map<string,string>();
   for(const a of input.accesses){
@@ -112,6 +121,84 @@ export async function loadLiveGateContext(reader:ExactControlPlaneReader,input:L
       throw new Error(`LIVE_GATE_CONTEXT_STALE:SINGLETON_RESOURCE:${a.datasetId}`);
     }
     physical.set(a.datasetId,c.Registry_Contract_Fingerprint);
+  }
+
+  // Non-Archive RW is an opt-in governed control-plane path, never a task-name
+  // bypass. Every RW Dataset (including future Dataset IDs) must be explicitly
+  // ACTIVE_ONLY in the singleton-selected ACTIVE Registry.
+  if(input.taskId==="ROLLING_WEDGE_INVESTMENT"){
+    const rw=dcs.filter(x=>x.Task_ID===input.taskId);
+    if(!rw.length || rw.some(x=>x.Contract_Status!=="ACTIVE"||
+      x.Archive_Enabled!=="FALSE"||x.Historical_Resolution_Mode!=="ACTIVE_ONLY"))
+      throw new Error("LIVE_GATE_CONTEXT_BLOCKED:RW_ARCHIVE_CONTRACT_NOT_ACTIVE_ONLY");
+    const registered=new Set(rw.map(x=>x.Dataset_ID));
+    if(registered.size!==rw.length || input.accesses.some(a=>!registered.has(a.datasetId)))
+      throw new Error("LIVE_GATE_CONTEXT_BLOCKED:RW_DATASET_SCOPE_CONFLICT");
+    if(input.rwNonArchiveControlTab!=="RW_Non_Archive_Control" ||
+       !input.currentCutoverControlFileId || !input.currentManifestId ||
+       !input.currentManifestFingerprint || !input.currentActivationEpoch ||
+       !input.currentCutoverId || !input.currentAcceptanceBindingId)
+      throw new Error("LIVE_GATE_CONTEXT_BLOCKED:RW_NON_ARCHIVE_CONTROL_UNREGISTERED");
+    // A cutover's Acceptance_Binding_ID alone does NOT prove D1 provider safety.
+    // This exact singleton-bound tab is a candidate owned projection requiring
+    // governed capability ownership/acceptance before publication.
+    const control=rows(await reader.readSheet(input.currentCutoverControlFileId,
+      input.rwNonArchiveControlTab,"A1:Q500"),[
+      "Task_ID","Dataset_ID","Cutover_ID","Activation_Epoch","Registry_Snapshot_ID",
+      "Registry_Fingerprint","Manifest_ID","Manifest_Fingerprint","Registry_Contract_Fingerprint",
+      "Acceptance_Binding_ID","Capability_Proof_State","Capability_Evidence_Ref",
+      ...D1_CASES,"Migration_Write_Fence_State",
+    ],"RW_NON_ARCHIVE_CONTROL");
+    const written=new Set(input.accesses.filter(a=>a.writerScopes.length).map(a=>a.datasetId));
+    if(!["ACTIVE","RELEASED"].includes(input.currentCutoverFenceState??""))
+      throw new Error("LIVE_GATE_CONTEXT_BLOCKED:RW_CUTOVER_FENCE_UNRESOLVED");
+    let migrationFenceActive=input.currentCutoverFenceState==="ACTIVE";
+    for(const dc of rw){
+      const r=one(control.filter(x=>x.Dataset_ID===dc.Dataset_ID&&x.Task_ID===input.taskId),
+        `RW_NON_ARCHIVE_CONTROL:${dc.Dataset_ID}`);
+      if(r.Cutover_ID!==input.currentCutoverId ||
+         r.Activation_Epoch!==input.currentActivationEpoch ||
+         r.Registry_Snapshot_ID!==input.currentRegistrySnapshotId ||
+         r.Registry_Fingerprint!==input.currentRegistryFingerprint ||
+         r.Manifest_ID!==input.currentManifestId ||
+         r.Manifest_Fingerprint!==input.currentManifestFingerprint ||
+         r.Registry_Contract_Fingerprint!==dc.Registry_Contract_Fingerprint ||
+         r.Acceptance_Binding_ID!==input.currentAcceptanceBindingId ||
+         r.Capability_Proof_State!=="ACCEPTED" || !r.Capability_Evidence_Ref ||
+         D1_CASES.some(tc=>r[tc]!=="PASS"))
+        throw new Error(`LIVE_GATE_CONTEXT_BLOCKED:RW_CAPABILITY_BINDING:${dc.Dataset_ID}`);
+      if(!["ACTIVE","RELEASED"].includes(r.Migration_Write_Fence_State))
+        throw new Error(`LIVE_GATE_CONTEXT_BLOCKED:RW_MIGRATION_FENCE_UNRESOLVED:${dc.Dataset_ID}`);
+      if(written.has(dc.Dataset_ID)&&r.Migration_Write_Fence_State==="ACTIVE")
+        migrationFenceActive=true;
+    }
+    // Live company activation comes from the registered company registry, not
+    // from Archive state or a local set of three/seven company names.
+    const business=new Map<string,string>();
+    let baselineText:string|undefined;
+    if(input.accesses.some(a=>a.dynamicInstance)){
+      const b=resource(rs,"RW_COMPANY_REGISTRY","Companies_Baseline.md");
+      baselineText=await reader.readDriveText(b.Exact_File_ID);
+      if(!baselineText.includes("sole authority for `Monitor_Enabled`, `State_Status`, and `Archived`"))
+        throw new Error("LIVE_GATE_CONTEXT_STALE:RW_COMPANY_REGISTRY_AUTHORITY");
+    }
+    for(const a of input.accesses)
+      business.set(ik(a.datasetId,a.instanceId),
+        a.dynamicInstance?companyState(baselineText!,a.instanceId):"NOT_APPLICABLE");
+    return {
+      migrationFenceActive,nonArchiveDatasetIds:registered,
+      pruneFenceIndexAvailable:false,pruneFencedKeys:new Set<string>(),
+      startedPruneKeys:new Set<string>(),archivedIdentityKeys:new Set<string>(),
+      physicalContractFingerprints:physical,businessAuthorityStates:business,
+      sourceEvidence:{
+        registry:`${input.currentRegistryFileId}:${input.currentRegistrySnapshotId}:${input.currentRegistryFingerprint}`,
+        physical:`${input.currentRegistryFileId}:Contract_Fingerprints`,
+        capability:`${input.currentCutoverControlFileId}:${input.rwNonArchiveControlTab}:${input.currentAcceptanceBindingId}`,
+        migration:`${input.currentCutoverControlFileId}:${input.currentCutoverId}:RW_Non_Archive_Control`,
+        prune:"NOT_APPLICABLE_VERIFIED_ACTIVE_ONLY",archiveIndex:"NOT_APPLICABLE_VERIFIED_ACTIVE_ONLY",
+        businessAuthority:baselineText?"RW_COMPANY_REGISTRY:Companies_Baseline.md":"NOT_APPLICABLE",
+      },
+    };
   }
 
   // The current Registry contract fingerprint is accepted as the physical D1 contract only
@@ -211,6 +298,7 @@ export async function loadLiveGateContext(reader:ExactControlPlaneReader,input:L
 
   return {
     migrationFenceActive,
+    nonArchiveDatasetIds:new Set<string>(),
     pruneFenceIndexAvailable,
     pruneFencedKeys:fenced,
     startedPruneKeys:started,

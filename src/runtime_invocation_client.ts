@@ -20,6 +20,11 @@ export interface PersistenceReadRequest {
   dataset_id: string;
   instance_id: string;
   selector: ReadSelector;
+  authority_epoch?: string;
+  manifest_fingerprint?: string;
+  read_purpose?: "INITIAL_BASELINE_READBACK";
+  expected_version?: number;
+  bootstrap_idempotency_key?: string;
 }
 
 export interface PersistenceWriteRequest {
@@ -34,6 +39,10 @@ export interface PersistenceWriteRequest {
   payload: unknown;
   record_key?: string;
   expected_version?: number;
+  authority_epoch?: string;
+  manifest_fingerprint?: string;
+  write_operation?: "INITIAL_BASELINE";
+  fields?: string[];
 }
 
 export type PersistenceRequest = PersistenceReadRequest | PersistenceWriteRequest;

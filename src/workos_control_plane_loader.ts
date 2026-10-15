@@ -1,9 +1,10 @@
 import {
-  PINNED_GATE_BLOB,
-  PINNED_GATE_CONFIG_FINGERPRINT,
-  PINNED_GATE_LOCATOR,
+  WORKOS_D1_GATE_IMPLEMENTATION_ID,
+  WORKOS_D1_GATE_IMPLEMENTATION_VERSION,
+  ACCEPTED_GATE_CONFIG_FINGERPRINT,
   type AuthorityPublicationProjection,
   type GateProjectionSnapshot,
+  type BootstrapGrantProjection,
   type ManifestAccessRow,
   type WriterScopeProjection,
 } from "./workos_persistent_gate_projection.js";
@@ -225,6 +226,65 @@ function normalizeAccess(
   return [...accesses.values()];
 }
 
+
+/**
+ * Optional publisher-owned bootstrap rows inside the ACTIVE Manifest, selected only
+ * by an explicit metadata locator, never by folder search or a caller-supplied grant.
+ * In current manifests without that locator, normal runtime is unchanged, and DRAFT
+ * INITIAL_BASELINE stays denied.
+ */
+export async function loadPublishedBootstrapGrants(
+  reader: ExactControlPlaneReader, manifestFileId: string,
+  metadata: Readonly<Record<string,string>>,
+  epoch: string, accesses: readonly ManifestAccessRow[],
+): Promise<ReadonlyMap<string,BootstrapGrantProjection>> {
+  if (!metadata.Bootstrap_Grant_Projection_Tab) return new Map();
+  if (metadata.Bootstrap_Grant_Projection_Tab !== "Initial_Baseline_Grants")
+    throw new Error("BOOTSTRAP_PROJECTION_TAB_UNREGISTERED");
+  const values = await reader.readSheet(manifestFileId,metadata.Bootstrap_Grant_Projection_Tab,"A1:L200");
+  if (!values.length) throw new Error("BOOTSTRAP_PROJECTION_EMPTY");
+  const required=["Task_ID","Manifest_ID","Manifest_Fingerprint","Authority_Epoch",
+    "Dataset_ID","Instance_ID","Logical_Member","Writer_ID","Reader_ID",
+    "Allowed_Fields","Idempotency_Key","Grant_State"];
+  if (required.some((col,i)=>values[0]?.[i]!==col))
+    throw new Error("BOOTSTRAP_PROJECTION_SCHEMA_INVALID");
+  const map=new Map<string,BootstrapGrantProjection>();
+  const seen=new Set<string>();
+  for (const raw of values.slice(1).filter(row=>row.some(Boolean))) {
+    const r=Object.fromEntries(required.map((col,i)=>[col,raw[i]??""]));
+    const key=`${r.Dataset_ID}\u0000${r.Instance_ID}`;
+    if (seen.has(key)) throw new Error("BOOTSTRAP_PROJECTION_DUPLICATE");
+    seen.add(key);
+    if (!["ACTIVE","REVOKED","DISABLED"].includes(r.Grant_State))
+      throw new Error("BOOTSTRAP_PROJECTION_STATE_INVALID");
+    if (r.Grant_State!=="ACTIVE") continue;
+    const entry=accesses.filter(x=>x.datasetId===r.Dataset_ID && x.instanceId===r.Instance_ID && x.logicalMember===r.Logical_Member);
+    const fields=r.Allowed_Fields.split(",").map(x=>x.trim()).filter(Boolean);
+    if (entry.length!==1 || entry[0].businessAuthorityState!=="DRAFT" ||
+        entry[0].writeMode!=="CURRENT_STATE" ||
+        !entry[0].readers.has(r.Reader_ID) ||
+        !entry[0].writerScopes.some(x=>x.writerId===r.Writer_ID &&
+          x.operations.has("CONDITIONAL_CURRENT_STATE") &&
+          (x.fields===null || fields.every(f=>x.fields!.has(f)))) ||
+        r.Task_ID!=="ROLLING_WEDGE_INVESTMENT" || r.Manifest_ID!==metadata.Manifest_ID ||
+        !metadata.Manifest_Fingerprint || r.Manifest_Fingerprint!==metadata.Manifest_Fingerprint ||
+        r.Authority_Epoch!==epoch || r.Dataset_ID!=="RW_CURRENT_STATE" ||
+        r.Writer_ID!=="Rolling_Wedge_Workflow" || r.Reader_ID!=="Rolling_Wedge_Workflow" ||
+        !r.Idempotency_Key || !/^[A-Za-z0-9._:-]{1,128}$/.test(r.Idempotency_Key) ||
+        fields.length===0 || new Set(fields).size!==fields.length ||
+        fields.some(x=>x.endsWith("__REVISER_OWNED")) ||
+        fields.some(x=>!/^[A-Za-z0-9._:-]{1,128}$/.test(x)))
+      throw new Error("BOOTSTRAP_PROJECTION_UNTRUSTED_OR_DRIFT");
+    map.set(key,{
+      taskId:r.Task_ID,manifestId:r.Manifest_ID,manifestFingerprint:r.Manifest_Fingerprint,
+      authorityEpoch:r.Authority_Epoch,datasetId:r.Dataset_ID,instanceId:r.Instance_ID,
+      logicalMember:r.Logical_Member,writerId:r.Writer_ID,readerId:r.Reader_ID,
+      fields:new Set(fields),idempotencyKey:r.Idempotency_Key,state:"ACTIVE",
+    });
+  }
+  return map;
+}
+
 export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: SupportedTaskId): Promise<LoadedControlPlane> {
   const agents = await reader.readDriveText(AGENTS_FILE_ID);
   const task = parseRegistration(agents, taskId);
@@ -261,7 +321,7 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
     throw new Error("AUTHORITY_LIVE_GATE_BINDING_MISSING");
   }
 
-  if (snapshot.gateConfigFingerprint !== PINNED_GATE_CONFIG_FINGERPRINT) {
+  if (snapshot.gateConfigFingerprint !== ACCEPTED_GATE_CONFIG_FINGERPRINT) {
     throw new Error("GATE_CONFIG_FINGERPRINT_DRIFT");
   }
 
@@ -276,7 +336,7 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
   const manifestFileId = member.Manifest_File_ID;
 
   const metadata = singleRow(
-    await reader.readSheet(manifestFileId, "Manifest_Metadata", "A1:I5"),
+    await reader.readSheet(manifestFileId, "Manifest_Metadata", "A1:J5"),
     "MANIFEST_METADATA",
   );
   if (metadata.Task_ID !== taskId || metadata.Manifest_State !== "ACTIVE") {
@@ -305,6 +365,12 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
     currentRegistrySnapshotId: snapshot.registrySnapshotId,
     currentRegistryFingerprint: snapshot.registryFingerprint,
     currentAcceptanceBindingId: snapshot.acceptanceBindingId,
+    currentCutoverControlFileId: REPOSITORY_CUTOVER_CONTROL_ID,
+    currentCutoverFenceState: cutover.MIGRATION_WRITE_FENCE_State,
+    currentActivationEpoch: snapshot.activationEpoch,
+    currentManifestId: metadata.Manifest_ID,
+    currentManifestFingerprint: metadata.Manifest_Fingerprint,
+    rwNonArchiveControlTab: metadata.RW_Non_Archive_Control_Tab,
     accesses: projectedAccesses,
   });
   const accesses: ManifestAccessRow[] = projectedAccesses.map((access) => {
@@ -318,6 +384,8 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
       businessAuthorityState: authority,
     };
   });
+
+  const bootstrapGrants=await loadPublishedBootstrapGrants(reader,manifestFileId,metadata,snapshot.activationEpoch,accesses);
 
   const [workflowText, runtimeProfileText] = await Promise.all([
     reader.readDriveText(task.workflowFileId),
@@ -353,8 +421,8 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
     manifestFingerprint: metadata.Manifest_Fingerprint,
     manifestMetadata: metadata,
     gate: {
-      gateLocator: PINNED_GATE_LOCATOR,
-      gateBlob: PINNED_GATE_BLOB,
+      gateImplementationId: WORKOS_D1_GATE_IMPLEMENTATION_ID,
+      gateImplementationVersion: WORKOS_D1_GATE_IMPLEMENTATION_VERSION,
       gateConfigFingerprint: snapshot.gateConfigFingerprint,
 
       authorityPublicationState: "EXACT_ONE",
@@ -373,10 +441,13 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
       manifestId: metadata.Manifest_ID,
       taskId,
       manifestState: metadata.Manifest_State,
+      manifestFingerprint: metadata.Manifest_Fingerprint,
+      bootstrapGrants,
       manifestRegistrySnapshotId: metadata.Registry_Snapshot_ID,
       manifestRegistryFingerprint: metadata.Registry_Fingerprint,
 
       migrationFenceActive: liveGate.migrationFenceActive,
+      nonArchiveDatasetIds: liveGate.nonArchiveDatasetIds,
       pruneFenceIndexAvailable: liveGate.pruneFenceIndexAvailable,
       pruneFencedKeys: liveGate.pruneFencedKeys,
       startedPruneKeys: liveGate.startedPruneKeys,

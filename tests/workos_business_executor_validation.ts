@@ -7,7 +7,7 @@ import {
   validateWorkflowTransition, invokeWriteWithFinality, FX_CRON, RW_CRON,
 } from "../src/workos_business_executor.js";
 import {
-  authorizePersistence, PINNED_GATE_BLOB, PINNED_GATE_CONFIG_FINGERPRINT, PINNED_GATE_LOCATOR,
+  authorizePersistence, WORKOS_D1_GATE_IMPLEMENTATION_VERSION, ACCEPTED_GATE_CONFIG_FINGERPRINT, WORKOS_D1_GATE_IMPLEMENTATION_ID,
   type GateProjectionSnapshot,
 } from "../src/workos_persistent_gate_projection.js";
 import {
@@ -83,17 +83,17 @@ for (const context of ["FX_WORKFLOW","FX_COLLECTOR","FX_READER","RW_WORKFLOW","R
 
 function baseGate(): GateProjectionSnapshot {
   return {
-    gateLocator: PINNED_GATE_LOCATOR,
-    gateBlob: PINNED_GATE_BLOB,
-    gateConfigFingerprint: PINNED_GATE_CONFIG_FINGERPRINT,
+    gateImplementationId: WORKOS_D1_GATE_IMPLEMENTATION_ID,
+    gateImplementationVersion: WORKOS_D1_GATE_IMPLEMENTATION_VERSION,
+    gateConfigFingerprint: ACCEPTED_GATE_CONFIG_FINGERPRINT,
     authorityPublicationState: "EXACT_ONE",
     authorityPublication: {
       authorityScopeFingerprint: "scope", currentCommittedCutoverId: "CUT", currentActivationEpoch: "10",
-      registrySnapshotId: "RS1", manifestSetId: "MSET1", gateConfigFingerprint: PINNED_GATE_CONFIG_FINGERPRINT,
+      registrySnapshotId: "RS1", manifestSetId: "MSET1", gateConfigFingerprint: ACCEPTED_GATE_CONFIG_FINGERPRINT,
       workflowSetFingerprint: "WFSET",
     },
     expectedAuthorityScopeFingerprint: "scope", expectedCutoverId: "CUT", expectedActivationEpoch: "10",
-    expectedManifestSetId: "MSET1", expectedGateConfigFingerprint: PINNED_GATE_CONFIG_FINGERPRINT,
+    expectedManifestSetId: "MSET1", expectedGateConfigFingerprint: ACCEPTED_GATE_CONFIG_FINGERPRINT,
     expectedWorkflowSetFingerprint: "WFSET", referencedCutoverState: "COMPLETE",
     currentRegistrySnapshotId: "RS1", currentRegistryFingerprint: "RF",
     manifestId: "MS1", taskId: "US_JAPAN_FX_POLICY", manifestState: "ACTIVE",

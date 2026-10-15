@@ -1,3 +1,6 @@
+import { GoogleExactControlPlaneReader, loadControlPlane, type LoadedControlPlane } from "./workos_control_plane_loader.js";
+import { authorizePersistence } from "./workos_persistent_gate_projection.js";
+import { validateRWInitialBaselineWire } from "./rw_current_state_wire.js";
 type ExecutionSurface = "CHAT" | "WORK";
 type TriggerMode = "HUMAN" | "SCHEDULE";
 type TaskId = "US_JAPAN_FX_POLICY" | "ROLLING_WEDGE_INVESTMENT";
@@ -23,12 +26,13 @@ interface D1PreparedStatement {
 interface CandidateEnv {
   DB: { prepare(query: string): D1PreparedStatement };
   RUNTIME_SECRET?: string;
+  WORKOS_CONTROL_PLANE_TOKEN?: string;
 }
 
 interface DatasetControl {
   taskId: TaskId;
   writeMode: WriteMode;
-  instances: ReadonlySet<string>;
+  instances: ReadonlySet<string> | null;
   writers: ReadonlySet<string>;
   readers: ReadonlySet<string>;
   resourceBinding: "DB";
@@ -49,6 +53,11 @@ interface ReadRequest {
   dataset_id: string;
   instance_id: string;
   selector: ReadSelector;
+  authority_epoch?: string;
+  manifest_fingerprint?: string;
+  read_purpose?: "INITIAL_BASELINE_READBACK";
+  expected_version?: number;
+  bootstrap_idempotency_key?: string;
 }
 
 interface WriteRequest {
@@ -63,6 +72,10 @@ interface WriteRequest {
   payload: unknown;
   record_key?: string;
   expected_version?: number;
+  authority_epoch?: string;
+  manifest_fingerprint?: string;
+  write_operation?: "INITIAL_BASELINE";
+  fields?: string[];
 }
 
 interface AppendRow {
@@ -91,7 +104,6 @@ interface CurrentRow {
 
 const SAFE_TOKEN = /^[A-Za-z0-9._:-]+$/;
 const FX_SINGLETON = new Set(["SINGLETON"]);
-const RW_INSTANCES = new Set(["ENPLAS", "SERVICENOW", "FIGMA"]);
 
 const WORKOS_DATASETS: Record<string, DatasetControl> = {
   FX_POLICY_ANALYSIS_STATE: {
@@ -129,7 +141,7 @@ const WORKOS_DATASETS: Record<string, DatasetControl> = {
   RW_CURRENT_STATE: {
     taskId: "ROLLING_WEDGE_INVESTMENT",
     writeMode: "CURRENT_STATE",
-    instances: RW_INSTANCES,
+    instances: null,
     writers: new Set(["Rolling_Wedge_Workflow"]),
     readers: new Set([
       "Rolling_Wedge_Workflow",
@@ -143,7 +155,7 @@ const WORKOS_DATASETS: Record<string, DatasetControl> = {
   RW_EVIDENCE_HISTORY: {
     taskId: "ROLLING_WEDGE_INVESTMENT",
     writeMode: "APPEND_ONLY",
-    instances: RW_INSTANCES,
+    instances: null,
     writers: new Set(["MONITOR"]),
     readers: new Set(["Rolling_Wedge_Workflow", "REVISER"]),
     resourceBinding: "DB",
@@ -151,7 +163,7 @@ const WORKOS_DATASETS: Record<string, DatasetControl> = {
   RW_REVISION_HISTORY: {
     taskId: "ROLLING_WEDGE_INVESTMENT",
     writeMode: "APPEND_ONLY",
-    instances: RW_INSTANCES,
+    instances: null,
     writers: new Set(["REVISER"]),
     readers: new Set(["Rolling_Wedge_Workflow", "REVISER"]),
     resourceBinding: "DB",
@@ -159,7 +171,7 @@ const WORKOS_DATASETS: Record<string, DatasetControl> = {
   RW_VALUATION_HISTORY: {
     taskId: "ROLLING_WEDGE_INVESTMENT",
     writeMode: "APPEND_ONLY",
-    instances: RW_INSTANCES,
+    instances: null,
     writers: new Set(["VALUATOR"]),
     readers: new Set(["Rolling_Wedge_Workflow", "VALUATOR"]),
     resourceBinding: "DB",
@@ -167,7 +179,7 @@ const WORKOS_DATASETS: Record<string, DatasetControl> = {
   RW_RUN_LOG: {
     taskId: "ROLLING_WEDGE_INVESTMENT",
     writeMode: "APPEND_ONLY",
-    instances: RW_INSTANCES,
+    instances: null,
     writers: new Set([
       "MONITOR",
       "REVISER",
@@ -236,7 +248,8 @@ function validRead(body: unknown): body is ReadRequest {
   const r = body as Record<string, unknown>;
   return onlyKeys(r, [
     "execution_surface", "trigger_mode", "task_id", "caller_identity", "operation",
-    "dataset_id", "instance_id", "selector",
+    "dataset_id", "instance_id", "selector", "authority_epoch", "manifest_fingerprint",
+    "read_purpose", "expected_version", "bootstrap_idempotency_key",
   ]) &&
     optionalExecutionMetadata(r) &&
     r.operation === "READ" &&
@@ -244,7 +257,12 @@ function validRead(body: unknown): body is ReadRequest {
     typeof r.caller_identity === "string" &&
     typeof r.dataset_id === "string" &&
     typeof r.instance_id === "string" &&
-    validSelector(r.selector);
+    validSelector(r.selector) &&
+    (r.authority_epoch === undefined || safeToken(r.authority_epoch, 128)) &&
+    (r.manifest_fingerprint === undefined || safeToken(r.manifest_fingerprint, 128)) &&
+    (r.read_purpose === undefined || r.read_purpose === "INITIAL_BASELINE_READBACK") &&
+    (r.expected_version === undefined || r.expected_version === 1) &&
+    (r.bootstrap_idempotency_key === undefined || safeToken(r.bootstrap_idempotency_key, 128));
 }
 
 function validWrite(body: unknown): body is WriteRequest {
@@ -253,6 +271,7 @@ function validWrite(body: unknown): body is WriteRequest {
   return onlyKeys(r, [
     "execution_surface", "trigger_mode", "task_id", "caller_identity", "operation",
     "dataset_id", "instance_id", "idempotency_key", "payload", "record_key", "expected_version",
+    "authority_epoch", "manifest_fingerprint", "write_operation", "fields",
   ]) &&
     optionalExecutionMetadata(r) &&
     r.operation === "WRITE" &&
@@ -261,13 +280,110 @@ function validWrite(body: unknown): body is WriteRequest {
     typeof r.dataset_id === "string" &&
     typeof r.instance_id === "string" &&
     safeToken(r.idempotency_key, 128) &&
-    Object.prototype.hasOwnProperty.call(r, "payload");
+    Object.prototype.hasOwnProperty.call(r, "payload") &&
+    (r.authority_epoch === undefined || safeToken(r.authority_epoch, 128)) &&
+    (r.manifest_fingerprint === undefined || safeToken(r.manifest_fingerprint, 128)) &&
+    (r.write_operation === undefined || r.write_operation === "INITIAL_BASELINE") &&
+    (r.fields === undefined || (Array.isArray(r.fields) && r.fields.length <= 128 &&
+      new Set(r.fields).size === r.fields.length &&
+      r.fields.every((x: unknown) => safeToken(x, 128))));
 }
 
-function resolveControl(body: ReadRequest | WriteRequest): DatasetControl | Response {
+
+
+/**
+ * Dynamic companies are resolved from the singleton-selected ACTIVE Manifest
+ * using the exact authenticated Google control plane reader on each request.
+ * Three correlated environment strings are NOT independent Publisher proof.
+ * No caller-supplied or deployment-supplied grant JSON can create authority.
+ */
+type TrustedControlPlaneSource = () => Promise<LoadedControlPlane>;
+
+async function rollingWedgeGateDecision(
+  body: ReadRequest | WriteRequest, source: TrustedControlPlaneSource,
+): Promise<Response | null> {
+  let cp: LoadedControlPlane;
+  try { cp = await source(); } catch { return fail("TRUSTED_CONTROL_PLANE_UNAVAILABLE", 403); }
+  if (cp.projectionDrift || cp.task.taskId !== "ROLLING_WEDGE_INVESTMENT" ||
+      cp.gate.taskId !== "ROLLING_WEDGE_INVESTMENT")
+    return fail("CONTROL_DENIED", 403);
+  const snapshot = cp.gate;
+  // Omitted legacy bindings are resolved exclusively from this trusted
+  // singleton-selected authority. An explicitly provided value must match.
+  if (!snapshot.expectedActivationEpoch || !snapshot.manifestFingerprint ||
+      (body.authority_epoch !== undefined &&
+       body.authority_epoch !== snapshot.expectedActivationEpoch) ||
+      (body.manifest_fingerprint !== undefined &&
+       body.manifest_fingerprint !== snapshot.manifestFingerprint))
+    return fail("AUTHORITY_BINDING_MISMATCH", 403);
+  const entries = snapshot.accesses.filter(x =>
+    x.datasetId === body.dataset_id && x.instanceId === body.instance_id);
+  if (entries.length !== 1) return fail("DATASET_NOT_REGISTERED", 403);
+  const entry = entries[0];
+  const isDraft = entry.dynamicInstance && entry.businessAuthorityState === "DRAFT";
+  if (!isDraft && entry.businessAuthorityState !== "ACTIVE")
+    return fail("BUSINESS_AUTHORITY_NOT_READY", 403);
+  if (entry.writeMode !== WORKOS_DATASETS[body.dataset_id]?.writeMode)
+    return fail("MANIFEST_OPERATION_MODE_MISMATCH", 403);
+  if (isDraft && (body.dataset_id !== "RW_CURRENT_STATE" ||
+      (body.operation === "READ" && body.selector.kind !== "CURRENT")))
+    return fail("BUSINESS_AUTHORITY_NOT_READY", 403);
+
+  const fields = body.operation === "WRITE" && body.payload !== null &&
+    typeof body.payload === "object" && !Array.isArray(body.payload)
+    ? new Set(Object.keys(body.payload as Record<string,unknown>)) : new Set<string>();
+  const operation = body.operation === "WRITE"
+    ? (isDraft ? body.write_operation : (
+        WORKOS_DATASETS[body.dataset_id]?.writeMode === "CURRENT_STATE"
+          ? "CONDITIONAL_CURRENT_STATE" : "APPEND_ONLY"))
+    : undefined;
+  if (body.operation === "WRITE" && (!operation ||
+      (body.fields !== undefined &&
+        (body.fields.length !== fields.size || !body.fields.every(x => fields.has(x)))) ||
+      (!isDraft && body.write_operation !== undefined)))
+    return fail("WRITE_SCOPE_VIOLATION", 403);
+  if (!isDraft && body.operation === "READ" &&
+      (body.read_purpose !== undefined || body.bootstrap_idempotency_key !== undefined))
+    return fail("READ_NOT_AUTHORIZED", 403);
+  try {
+    authorizePersistence(snapshot,{
+      taskId: body.task_id, callerIdentity: body.caller_identity,
+      manifestId: snapshot.manifestId, datasetId: body.dataset_id,
+      instanceId: body.instance_id, logicalMember: entry.logicalMember,
+      operation: body.operation,
+      ...(body.operation === "WRITE" ? {
+        writeOperation: operation, fields, expectedVersion: body.expected_version,
+        idempotencyKey: body.idempotency_key,
+      } : {
+        readPurpose: body.read_purpose, expectedVersion: body.expected_version,
+        idempotencyKey: body.bootstrap_idempotency_key,
+      }),
+    });
+  } catch { return fail("PUBLISHED_GATE_DENIED", 403); }
+
+  if (!isDraft) return null;
+  if (body.operation === "READ") return null;
+  // Validate the actual published eight-field dataset wire at the Worker
+  // boundary; matching grant field names alone does not validate content.
+  if (!validateRWInitialBaselineWire(body.payload, body.instance_id))
+    return fail("BOOTSTRAP_PAYLOAD_INVALID", 400);
+  return null;
+}
+
+async function resolveControl(
+  body: ReadRequest | WriteRequest, env: CandidateEnv, source: TrustedControlPlaneSource,
+): Promise<DatasetControl | Response> {
   const control = WORKOS_DATASETS[body.dataset_id];
   if (!control) return fail("DATASET_NOT_REGISTERED", 403);
-  if (control.taskId !== body.task_id || !control.instances.has(body.instance_id)) return fail("CONTROL_DENIED", 403);
+  if (control.taskId !== body.task_id) return fail("CONTROL_DENIED", 403);
+  if (control.taskId === "ROLLING_WEDGE_INVESTMENT") {
+    // Every RW instance, including the original three, must enter the
+    // trusted Manifest Gate; Worker-local company/caller lists grant nothing.
+    const denied = await rollingWedgeGateDecision(body, source);
+    return denied ?? control;
+  }
+  // Unchanged FX singleton and legacy caller behavior.
+  if (!control.instances?.has(body.instance_id)) return fail("CONTROL_DENIED", 403);
   if (body.operation === "READ") {
     if (!control.readers.has(body.caller_identity)) return fail("READ_NOT_AUTHORIZED", 403);
   } else if (!control.writers.has(body.caller_identity)) {
@@ -366,8 +482,8 @@ function currentSuccess(body: WriteRequest, control: DatasetControl, row: Curren
   });
 }
 
-async function handleRead(body: ReadRequest, env: CandidateEnv): Promise<Response> {
-  const resolved = resolveControl(body);
+async function handleRead(body: ReadRequest, env: CandidateEnv, source: TrustedControlPlaneSource): Promise<Response> {
+  const resolved = await resolveControl(body, env, source);
   if (resolved instanceof Response) return resolved;
   const b = base(body, resolved);
 
@@ -377,6 +493,10 @@ async function handleRead(body: ReadRequest, env: CandidateEnv): Promise<Respons
     try { row = await current(env, body.dataset_id, body.instance_id); }
     catch { return fail("READ_FAILED", 500); }
     if (!row) return fail("NOT_FOUND", 404);
+    if (body.read_purpose === "INITIAL_BASELINE_READBACK" &&
+        (row.version !== 1 || row.previous_version !== 0 ||
+         row.idempotency_key !== body.bootstrap_idempotency_key))
+      return fail("BOOTSTRAP_READBACK_MISMATCH", 409);
     try {
       return Response.json({
         status: "SUCCESS", ...b, selector: "CURRENT", version: row.version,
@@ -564,8 +684,8 @@ async function handleCurrentWrite(body: WriteRequest, control: DatasetControl, e
   return currentSuccess(body, control, row, false);
 }
 
-async function handleWrite(body: WriteRequest, env: CandidateEnv): Promise<Response> {
-  const resolved = resolveControl(body);
+async function handleWrite(body: WriteRequest, env: CandidateEnv, source: TrustedControlPlaneSource): Promise<Response> {
+  const resolved = await resolveControl(body, env, source);
   if (resolved instanceof Response) return resolved;
   const payloadJson = serializePayload(body.payload);
   if (payloadJson === null) return fail("INVALID_PAYLOAD", 400);
@@ -574,12 +694,22 @@ async function handleWrite(body: WriteRequest, env: CandidateEnv): Promise<Respo
     : handleCurrentWrite(body, resolved, env, payloadJson);
 }
 
-export async function handleWorkOsCandidatePersistence(request: Request, env: CandidateEnv): Promise<Response> {
+export async function handleWorkOsCandidatePersistence(
+  request: Request, env: CandidateEnv,
+  /** Isolated tests may inject a trusted reader; HTTP callers cannot supply one. */
+  trustedSource?: TrustedControlPlaneSource,
+): Promise<Response> {
   const authError = authenticate(request, env);
   if (authError) return authError;
-
+  const source: TrustedControlPlaneSource = trustedSource ?? (async () => {
+    if (!env.WORKOS_CONTROL_PLANE_TOKEN) throw new Error("CONTROL_PLANE_TOKEN_MISSING");
+    return loadControlPlane(
+      new GoogleExactControlPlaneReader(env.WORKOS_CONTROL_PLANE_TOKEN),
+      "ROLLING_WEDGE_INVESTMENT",
+    );
+  });
   const body = await parseJson(request);
-  if (validRead(body)) return handleRead(body, env);
-  if (validWrite(body)) return handleWrite(body, env);
+  if (validRead(body)) return handleRead(body, env, source);
+  if (validWrite(body)) return handleWrite(body, env, source);
   return fail("INVALID_REQUEST", 400);
 }

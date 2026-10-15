@@ -1,7 +1,9 @@
-export const PINNED_GATE_LOCATOR =
-  "https://github.com/lennyliu01/data-archive-runtime/blob/3b3158b78eaf6e93bf915f6d49fb0964390c90bb/src/data_archive_runtime/gate.py";
-export const PINNED_GATE_BLOB = "ad08749e52427f81f66dab89788779eb29bb09c2";
-export const PINNED_GATE_CONFIG_FINGERPRINT =
+/** WorkOS-owned candidate Gate. Publication of this implementation requires governed CHANGE.
+ * This fingerprint identifies the current singleton-authorized configuration,
+ * not a Python code pin or an assertion of production approval. */
+export const WORKOS_D1_GATE_IMPLEMENTATION_ID = "WORKOS_D1_PERSISTENT_GATE";
+export const WORKOS_D1_GATE_IMPLEMENTATION_VERSION = "1.0.0-candidate";
+export const ACCEPTED_GATE_CONFIG_FINGERPRINT =
   "ba3bb9599a034a764c9bdfd10a3dca79436fbae80960ace6a64e2786035909f8";
 
 export type PersistenceOperation = "READ" | "WRITE";
@@ -35,9 +37,24 @@ export interface ManifestAccessRow {
   businessAuthorityState: string;
 }
 
+export interface BootstrapGrantProjection {
+  taskId: string;
+  manifestId: string;
+  manifestFingerprint: string;
+  authorityEpoch: string;
+  datasetId: string;
+  instanceId: string;
+  logicalMember: string;
+  writerId: string;
+  readerId: string;
+  fields: ReadonlySet<string>;
+  idempotencyKey: string;
+  state: "ACTIVE" | "DISABLED";
+}
+
 export interface GateProjectionSnapshot {
-  gateLocator: string;
-  gateBlob: string;
+  gateImplementationId: string;
+  gateImplementationVersion: string;
   gateConfigFingerprint: string;
 
   authorityPublicationState: "EXACT_ONE" | "UNAVAILABLE" | "MISSING" | "CONFLICT";
@@ -56,10 +73,15 @@ export interface GateProjectionSnapshot {
   manifestId: string;
   taskId: string;
   manifestState: string;
+  manifestFingerprint?: string;
+  /** Only populated from a verified, publisher-owned authority control projection. */
+  bootstrapGrants?: ReadonlyMap<string, BootstrapGrantProjection>;
   manifestRegistrySnapshotId: string;
   manifestRegistryFingerprint: string;
 
   migrationFenceActive: boolean;
+  /** Trusted loader marks only ACTIVE Registry-verified ACTIVE_ONLY datasets. */
+  nonArchiveDatasetIds?: ReadonlySet<string>;
   pruneFenceIndexAvailable: boolean;
   pruneFencedKeys: ReadonlySet<string>;
   startedPruneKeys: ReadonlySet<string>;
@@ -79,16 +101,25 @@ export interface PersistenceAuthorizationRequest {
   writeOperation?: string;
   fields?: ReadonlySet<string>;
   logicalK1?: string | null;
+  expectedVersion?: number;
+  idempotencyKey?: string;
+  readPurpose?: string;
 }
 
 function logicalKey(datasetId: string, logicalK1: string): string {
   return `${datasetId}\u0000${logicalK1}`;
 }
 
-export function assertGateProjectionPin(snapshot: GateProjectionSnapshot): void {
-  if (snapshot.gateLocator !== PINNED_GATE_LOCATOR) throw new Error("GATE_LOCATOR_DRIFT");
-  if (snapshot.gateBlob !== PINNED_GATE_BLOB) throw new Error("GATE_BLOB_DRIFT");
-  if (snapshot.gateConfigFingerprint !== PINNED_GATE_CONFIG_FINGERPRINT) {
+export function assertWorkOsGateImplementation(snapshot: GateProjectionSnapshot): void {
+  if (snapshot.gateImplementationId !== WORKOS_D1_GATE_IMPLEMENTATION_ID) {
+    throw new Error("GATE_IMPLEMENTATION_ID_DRIFT");
+  }
+  if (snapshot.gateImplementationVersion !== WORKOS_D1_GATE_IMPLEMENTATION_VERSION) {
+    throw new Error("GATE_IMPLEMENTATION_VERSION_DRIFT");
+  }
+  if (!snapshot.expectedGateConfigFingerprint ||
+      snapshot.gateConfigFingerprint !== snapshot.expectedGateConfigFingerprint ||
+      snapshot.gateConfigFingerprint !== ACCEPTED_GATE_CONFIG_FINGERPRINT) {
     throw new Error("GATE_CONFIG_FINGERPRINT_DRIFT");
   }
 }
@@ -141,11 +172,46 @@ function findAccess(snapshot: GateProjectionSnapshot, request: PersistenceAuthor
   return matches[0];
 }
 
+
+function draftGrant(snapshot: GateProjectionSnapshot, entry: ManifestAccessRow): BootstrapGrantProjection | null {
+  if (!entry.dynamicInstance || entry.businessAuthorityState !== "DRAFT" ||
+      snapshot.taskId !== "ROLLING_WEDGE_INVESTMENT" || entry.datasetId !== "RW_CURRENT_STATE" ||
+      !snapshot.manifestFingerprint) return null;
+  const grant = snapshot.bootstrapGrants?.get(`${entry.datasetId}\u0000${entry.instanceId}`);
+  if (!grant || grant.state !== "ACTIVE" ||
+      grant.taskId !== snapshot.taskId || grant.manifestId !== snapshot.manifestId ||
+      grant.manifestFingerprint !== snapshot.manifestFingerprint ||
+      grant.authorityEpoch !== snapshot.expectedActivationEpoch ||
+      grant.datasetId !== entry.datasetId || grant.instanceId !== entry.instanceId ||
+      grant.logicalMember !== entry.logicalMember ||
+      grant.writerId !== "Rolling_Wedge_Workflow" || grant.readerId !== "Rolling_Wedge_Workflow" ||
+      !grant.idempotencyKey || grant.fields.size === 0) return null;
+  return grant;
+}
+function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  return a.size === b.size && [...a].every(value => b.has(value));
+}
+function allowDraft(snapshot: GateProjectionSnapshot, entry: ManifestAccessRow, request: PersistenceAuthorizationRequest): boolean {
+  const grant = draftGrant(snapshot, entry);
+  if (!grant || request.callerIdentity !== "Rolling_Wedge_Workflow" ||
+      entry.writeMode !== "CURRENT_STATE" || request.logicalK1) return false;
+  if (request.operation === "READ") {
+    return request.readPurpose === "INITIAL_BASELINE_READBACK" &&
+      request.expectedVersion === 1 && request.idempotencyKey === grant.idempotencyKey;
+  }
+  return request.writeOperation === "INITIAL_BASELINE" && request.expectedVersion === 0 &&
+    request.idempotencyKey === grant.idempotencyKey &&
+    sameSet(request.fields ?? new Set(), grant.fields) &&
+    entry.writerScopes.some(scope => scope.writerId === grant.writerId &&
+      scope.operations.has("CONDITIONAL_CURRENT_STATE") &&
+      (scope.fields === null || [...grant.fields].every(field => scope.fields!.has(field))));
+}
+
 export function authorizePersistence(
   snapshot: GateProjectionSnapshot,
   request: PersistenceAuthorizationRequest,
 ): ManifestAccessRow {
-  assertGateProjectionPin(snapshot);
+  assertWorkOsGateImplementation(snapshot);
   assertAuthority(snapshot);
 
   if (snapshot.manifestState !== "ACTIVE") throw new Error(`MANIFEST_NOT_ACTIVE:${snapshot.manifestState}`);
@@ -162,12 +228,14 @@ export function authorizePersistence(
   if (request.operation === "WRITE" && snapshot.migrationFenceActive) {
     throw new Error("MIGRATION_WRITE_FENCE_ACTIVE");
   }
-  if (request.operation === "READ" && !snapshot.pruneFenceIndexAvailable) {
+  if (request.operation === "READ" && !snapshot.pruneFenceIndexAvailable &&
+      !snapshot.nonArchiveDatasetIds?.has(request.datasetId)) {
     throw new Error("PRUNE_FENCE_UNAVAILABLE");
   }
 
   const entry = findAccess(snapshot, request);
-  if (entry.dynamicInstance && entry.businessAuthorityState !== "ACTIVE") {
+  if (entry.dynamicInstance && entry.businessAuthorityState !== "ACTIVE" &&
+      !allowDraft(snapshot, entry, request)) {
     throw new Error(`BUSINESS_AUTHORITY_NOT_READY:${entry.businessAuthorityState}`);
   }
 
@@ -179,7 +247,7 @@ export function authorizePersistence(
   }
 
   if (request.operation === "READ") {
-    if (entry.readers.size > 0 && !entry.readers.has(request.callerIdentity)) {
+    if (!entry.readers.has(request.callerIdentity)) {
       throw new Error("READ_NOT_AUTHORIZED");
     }
     if (request.logicalK1 && snapshot.startedPruneKeys.has(logicalKey(request.datasetId, request.logicalK1))) {
@@ -191,7 +259,8 @@ export function authorizePersistence(
   const operation = request.writeOperation;
   if (!operation) throw new Error("WRITE_SCOPE_VIOLATION:operation missing");
   const scope = entry.writerScopes.find((candidate) => candidate.writerId === request.callerIdentity);
-  if (!scope || !scope.operations.has(operation)) throw new Error("WRITE_SCOPE_VIOLATION");
+  const isBootstrap = entry.dynamicInstance && entry.businessAuthorityState === "DRAFT" && allowDraft(snapshot, entry, request);
+  if (!scope || (!isBootstrap && !scope.operations.has(operation))) throw new Error("WRITE_SCOPE_VIOLATION");
   const fields = request.fields ?? new Set<string>();
   if (scope.fields !== null && [...fields].some((field) => !scope.fields!.has(field))) {
     throw new Error("WRITE_SCOPE_VIOLATION:field scope");
