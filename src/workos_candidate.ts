@@ -1,5 +1,6 @@
 import { GoogleExactControlPlaneReader, loadControlPlane, type LoadedControlPlane } from "./workos_control_plane_loader.js";
 import { authorizePersistence } from "./workos_persistent_gate_projection.js";
+import { validateRWInitialBaselineWire } from "./rw_current_state_wire.js";
 type ExecutionSurface = "CHAT" | "WORK";
 type TriggerMode = "HUMAN" | "SCHEDULE";
 type TaskId = "US_JAPAN_FX_POLICY" | "ROLLING_WEDGE_INVESTMENT";
@@ -362,17 +363,9 @@ async function rollingWedgeGateDecision(
 
   if (!isDraft) return null;
   if (body.operation === "READ") return null;
-  const data = body.payload as Record<string,unknown>;
-  if (data.Company_ID !== body.instance_id || data.Instance_ID !== body.instance_id ||
-      data.Belief_State_ID !== null || data.Valuation_State_ID !== null ||
-      data.Decision_State_ID !== null || data.Scenario_Probabilities !== null ||
-      data.Confidence !== null || data.Next_Reality_Watch_Accepted !== false ||
-      data.Material_Capital_Commitment_Accepted !== false ||
-      data.Production_D1_Initialized !== false ||
-      typeof data.Base_Source_Source_Status !== "string" ||
-      !data.Base_Source_Source_Status.startsWith("SOURCE_STATUS: ACCEPTED") ||
-      "MATERIAL_CAPITAL_COMMITMENT_CANDIDATE__REVISER_OWNED" in data ||
-      "NEXT_REALITY_WATCH_CANDIDATE__REVISER_OWNED" in data)
+  // Validate the actual published eight-field dataset wire at the Worker
+  // boundary; matching grant field names alone does not validate content.
+  if (!validateRWInitialBaselineWire(body.payload, body.instance_id))
     return fail("BOOTSTRAP_PAYLOAD_INVALID", 400);
   return null;
 }
