@@ -29,7 +29,10 @@ try {
   const DB=await mf.getD1Database("DB");
   const ddl=readFileSync("migrations/0003_create_workos_candidate_persistence.sql","utf8")
     .split("\n").filter(line=>!line.trimStart().startsWith("--")).join("\n");
-  await DB.exec(ddl);
+  for(const statement of ddl.split(";").map(x=>x.trim()).filter(Boolean)){
+    const result=await DB.prepare(statement).run();
+    assert.equal(result.success,true,"isolated D1 migration must apply");
+  }
   const env={DB,RUNTIME_SECRET:"isolated-r4-integration-only"} as any;
   const ids=["DSG","DOL","WSP","GIBA","NA","ENB","ATD"];
   const old=["ENPLAS","SERVICENOW","FIGMA"];
