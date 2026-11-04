@@ -94,7 +94,7 @@ export async function recoverBaselineReadbackOnly(
     throw new Error("BOOTSTRAP_RECOVERY_AUTHORITY_UNAVAILABLE");
   const snap=cp.gate;
   const matches=snap.accesses.filter(a=>a.datasetId==="RW_CURRENT_STATE" && a.instanceId===instanceId);
-  const grant=snap.bootstrapGrants?.get(`RW_CURRENT_STATE\\u0000${instanceId}`);
+  const grant=snap.bootstrapGrants?.get(`RW_CURRENT_STATE\u0000${instanceId}`);
   if (matches.length!==1 || !grant || grant.state!=="ACTIVE" ||
       !snap.manifestFingerprint || snap.manifestFingerprint!==grant.manifestFingerprint ||
       Object.keys(payload).length!==grant.fields.size ||
