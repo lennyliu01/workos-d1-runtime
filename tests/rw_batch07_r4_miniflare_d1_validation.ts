@@ -20,7 +20,7 @@ import {RW_CURRENT_STATE_FIELDS,FROZEN_RESEARCH_FIELDS,FROZEN_SOURCE_FIELDS,cano
 const mf=new Miniflare({
   modules:true,
   script:"export default {fetch(){return new Response('isolated')}}",
-  compatibilityDate:"2026-09-22",
+  compatibilityDate:"2026-08-06",
   d1Databases:{DB:"00000000-0000-4000-8000-000000000389"},
 });
 let checks=0;
