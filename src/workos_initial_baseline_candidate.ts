@@ -74,9 +74,57 @@ export async function initializeBaselineWithReadback(
       ? Object.fromEntries(Object.entries(val).sort(([a],[b]) => a.localeCompare(b))) : val);
   if (rb.status !== "SUCCESS" || rb.version !== 1 ||
       rb.previous_version !== 0 || stable(rb.payload) !== stable(payload) ||
-      rb.instance_id !== instanceId)
+      rb.instance_id !== instanceId || rb.idempotency_key !== grant.idempotencyKey ||
+      rb.invocation_id !== wr.invocation_id)
     throw new Error("BOOTSTRAP_READBACK_NOT_CONFIRMED");
   return {write: wr, readback: rb};
+}
+
+/**
+ * Crash/timeout recovery is deliberately READ-ONLY. It never issues a second
+ * INITIAL_BASELINE WRITE or treats matching idempotency as a new write success.
+ * A recovered v1 proves D1 state, not authorship by the recovering invocation.
+ */
+export async function recoverBaselineReadbackOnly(
+  cp: LoadedControlPlane, instanceId: string, payload: Record<string,unknown>,
+  runtimeSecret: string, fetchImpl: typeof fetch = fetch,
+): Promise<{ recovery: "READBACK_ONLY"; readback: Record<string,unknown> }> {
+  if (cp.task.taskId !== "ROLLING_WEDGE_INVESTMENT" || cp.projectionDrift || !runtimeSecret ||
+      !validateRWInitialBaselineWire(payload,instanceId))
+    throw new Error("BOOTSTRAP_RECOVERY_AUTHORITY_UNAVAILABLE");
+  const snap=cp.gate;
+  const matches=snap.accesses.filter(a=>a.datasetId==="RW_CURRENT_STATE" && a.instanceId===instanceId);
+  const grant=snap.bootstrapGrants?.get(`RW_CURRENT_STATE\\u0000${instanceId}`);
+  if (matches.length!==1 || !grant || grant.state!=="ACTIVE" ||
+      !snap.manifestFingerprint || snap.manifestFingerprint!==grant.manifestFingerprint ||
+      Object.keys(payload).length!==grant.fields.size ||
+      !Object.keys(payload).every(x=>grant.fields.has(x)))
+    throw new Error("BOOTSTRAP_RECOVERY_SCOPE_DENIED");
+  authorizePersistence(snap,{
+    taskId:snap.taskId,callerIdentity:"Rolling_Wedge_Workflow",manifestId:snap.manifestId,
+    datasetId:"RW_CURRENT_STATE",instanceId,logicalMember:matches[0].logicalMember,
+    operation:"READ",readPurpose:"INITIAL_BASELINE_READBACK",
+    expectedVersion:1,idempotencyKey:grant.idempotencyKey,
+  });
+  const rb=(await invokePersistence({
+    execution_surface:"WORK",trigger_mode:"HUMAN",task_id:snap.taskId,
+    caller_identity:"Rolling_Wedge_Workflow",operation:"READ",
+    dataset_id:"RW_CURRENT_STATE",instance_id:instanceId,selector:{kind:"CURRENT"},
+    expected_version:1,bootstrap_idempotency_key:grant.idempotencyKey,
+    read_purpose:"INITIAL_BASELINE_READBACK",
+    authority_epoch:snap.expectedActivationEpoch,
+    manifest_fingerprint:snap.manifestFingerprint,
+  },runtimeSecret,fetchImpl)).response;
+  const canonical=(v:unknown):string=>JSON.stringify(v,(_key,value)=>
+    value&&typeof value==="object"&&!Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).sort(([a],[b])=>a<b?-1:a>b?1:0))
+      : value);
+  if(rb.status!=="SUCCESS" || rb.version!==1 || rb.previous_version!==0 ||
+     rb.idempotency_key!==grant.idempotencyKey || rb.instance_id!==instanceId ||
+     typeof rb.invocation_id!=="string" || !rb.invocation_id ||
+     canonical(rb.payload)!==canonical(payload))
+    throw new Error("BOOTSTRAP_RECOVERY_READBACK_MISMATCH");
+  return {recovery:"READBACK_ONLY",readback:rb};
 }
 
 /** Manual owner path, intentionally not reachable by schedule or READ_ONLY dispatch. */
