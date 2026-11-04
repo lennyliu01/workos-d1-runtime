@@ -1,0 +1,22 @@
+name: RW Batch07 Common D1 Authority Reader Candidate
+on:
+  push:
+    branches:
+      - candidate/rw-batch07-common-authority-reader-20261104-01
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  common-reader-isolated:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npx tsx tests/rw_batch07_d1_authority_pointer_cas_validation.ts
+      - run: npx tsx tests/rw_batch07_common_authority_reader_candidate_validation.ts
+      - run: npm run test:rw-r4-d1
+      - run: npm run test:workos-business-executor
