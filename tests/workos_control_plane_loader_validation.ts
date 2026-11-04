@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { sha256Exact, type CandidateD1, type Pointer } from "../src/workos_authority_pointer_candidate.js";
+import { loadControlPlaneFromD1Candidate } from "../src/workos_common_authority_reader_candidate.js";
 import { AGENTS_FILE_ID, REPOSITORY_CUTOVER_CONTROL_ID, loadControlPlane, type ExactControlPlaneReader } from "../src/workos_control_plane_loader.js";
 import { loadLiveGateContext } from "../src/workos_live_gate_context.js";
 import { WORKOS_D1_GATE_IMPLEMENTATION_VERSION, ACCEPTED_GATE_CONFIG_FINGERPRINT, authorizePersistence, type ManifestAccessRow } from "../src/workos_persistent_gate_projection.js";
@@ -275,4 +277,94 @@ await assert.rejects(()=>loadLiveGateContext(
   new FakeReader(undefined,renderBaseline(companyIDs)),
   {...rwInput,accesses:[...tenAccesses,futureAccess]},
 ),/COMPANY_AUTHORITY/);
+
+/**
+ * Non-production full control-plane integration witness for the executable
+ * FX_POLICY reader. The underlying fake throws on any old Sheets selector call,
+ * while ordinary Manifest/Registry DATA Sheet reads are retained.
+ */
+const testFP="a".repeat(64);
+const candidateAP={
+  Authority_Scope_Fingerprint:"b".repeat(64),
+  Current_Committed_Cutover_ID:"CUT",Current_Activation_Epoch:"10",
+  Registry_Snapshot_ID:"RS1",Manifest_Set_ID:"MSET1",
+  Gate_Config_Fingerprint:ACCEPTED_GATE_CONFIG_FINGERPRINT,
+  Workflow_Set_Fingerprint:"c".repeat(64),Published_At:"time",
+};
+const candidateCutover={
+  Cutover_ID:"CUT",Cutover_State:"COMPLETE",Authority_Scope_Fingerprint:"b".repeat(64),
+  Target_Registry_Snapshot_ID:"RS1",Target_Registry_Fingerprint:"RF",
+  Target_Registry_File_ID:REG,Target_Manifest_Set_ID:"MSET1",
+  Target_Workflow_Set_Fingerprint:"c".repeat(64),
+  Persistent_Data_Gate_Config_Fingerprint:ACCEPTED_GATE_CONFIG_FINGERPRINT,
+  MIGRATION_WRITE_FENCE_State:"RELEASED",Activation_Epoch:"10",
+  Target_Acceptance_Binding_ID:"AB",
+};
+const taskNames=["COMPANY_SCREENING","ROLLING_WEDGE_INVESTMENT",
+  "US_JAPAN_FX_DIRECTION_REVIEW","US_JAPAN_FX_FEEDBACK","US_JAPAN_FX_POLICY"];
+const candidateMembers=taskNames.map((t,i)=>({
+  Manifest_Set_ID:"MSET1",Task_ID:t,Manifest_File_ID:i===4?MAN:`OTHER_${i}`,
+  Manifest_Fingerprint:i===4?testFP:"d".repeat(64),Projection_State:"ACTIVE",
+}));
+const candidateBundle=JSON.stringify({authorityPublication:candidateAP,
+  cutover:candidateCutover,manifestMembers:candidateMembers});
+const candidateFP=await sha256Exact(candidateBundle);
+const candidateSourceFP=await sha256Exact("ISOLATED_LOADER_SELECTED_SOURCE");
+const expected={epoch:10,sourceFingerprint:candidateSourceFP,
+  bundleFingerprint:candidateFP,publicationId:"LOADER_TEST_PUB",
+  publisherInvocationId:"LOADER_TEST_INV"};
+let currentPointer:Pointer={selector_key:"CURRENT",epoch:10,previous_epoch:9,
+  source_fingerprint:candidateSourceFP,bundle_fingerprint:candidateFP,
+  bundle_json:candidateBundle,publication_id:expected.publicationId,
+  publisher_invocation_id:expected.publisherInvocationId,status:"COMMITTED",
+  committed_at:"2026-11-04T00:00:00Z"};
+const candidateDB={
+  prepare(sql:string){
+    assert.match(sql,/SELECT selector_key/);
+    return {
+      first:async<T>()=>currentPointer as T,bind(){return this;},
+      run:async()=>({success:true}),
+    };
+  },
+} as CandidateD1;
+class CandidateDataReader extends FakeReader {
+  readonly actualDataReads:string[]=[];
+  async readSheet(id:string,sheet:string,range:string){
+    if(id===REPOSITORY_CUTOVER_CONTROL_ID &&
+       ["Authority_Publication","Cutovers","Manifest_Set_Members"].includes(sheet))
+      throw new Error("FORBIDDEN_SHEETS_SELECTOR_FALLBACK");
+    this.actualDataReads.push(id+":"+sheet);
+    const rows=await super.readSheet(id,sheet,range);
+    if(id===MAN && sheet==="Manifest_Metadata") {
+      const copy=rows.map(row=>[...row]);copy[1][4]=testFP;return copy;
+    }
+    return rows;
+  }
+}
+const candidateData=new CandidateDataReader();
+const candidateCP=await loadControlPlaneFromD1Candidate(
+  candidateData,"US_JAPAN_FX_POLICY",candidateDB,expected);
+assert.equal(candidateCP.manifestFileId,MAN);
+assert.equal(candidateCP.manifestFingerprint,testFP);
+assert.equal(candidateCP.authority.activationEpoch,"10");
+assert.equal(candidateCP.authority.currentCutoverId,"CUT");
+assert.equal(candidateData.actualDataReads.includes(MAN+":Manifest_Metadata"),true);
+assert.equal(candidateData.actualDataReads.some(s=>s.includes(":Authority_Publication")),false);
+await assert.rejects(()=>loadControlPlaneFromD1Candidate(
+  new CandidateDataReader(),"US_JAPAN_FX_POLICY",candidateDB,{...expected,epoch:9}),
+  /STALE_OR_UNTRUSTED_GENERATION/);
+// A mid-flight pointer change must invalidate an otherwise successful data read.
+class SwitchingDataReader extends CandidateDataReader {
+  async readSheet(id:string,sheet:string,range:string){
+    const result=await super.readSheet(id,sheet,range);
+    if(id===MAN && sheet==="Manifest_Metadata")
+      currentPointer={...currentPointer,epoch:11,previous_epoch:10,
+        publication_id:"NEXT_PUB",publisher_invocation_id:"NEXT_INV"};
+    return result;
+  }
+}
+await assert.rejects(()=>loadControlPlaneFromD1Candidate(
+  new SwitchingDataReader(),"US_JAPAN_FX_POLICY",candidateDB,expected),
+  /STALE_OR_UNTRUSTED_GENERATION|BUNDLE_DRIFT/);
+
 console.log("workos_control_plane_loader_validation: PASS");
