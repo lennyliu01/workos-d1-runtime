@@ -28,7 +28,7 @@ export interface ExpectedCandidateGeneration {
   publicationId: string;
   publisherInvocationId: string;
 }
-export interface ManifestMember {
+export interface ManifestMember extends Record<string,string> {
   Manifest_Set_ID: string;
   Task_ID: CommonTaskId;
   Manifest_File_ID: string;
