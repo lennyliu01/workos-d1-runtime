@@ -270,7 +270,7 @@ export async function loadPublishedBootstrapGrants(
     if (r.Grant_State!=="ACTIVE") continue;
     // Strict UTC issuance/expiry. The timestamps are candidate policy fields,
     // not sufficient to prove the issuer or authorize a production Grant.
-    const iso = /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?Z$/;
+    const iso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
     const issuedAtMs=Date.parse(r.Issued_At);
     const expiresAtMs=Date.parse(r.Expires_At);
     if (!iso.test(r.Issued_At) || !iso.test(r.Expires_At) ||
