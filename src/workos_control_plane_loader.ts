@@ -18,6 +18,15 @@ export type SupportedTaskId = "US_JAPAN_FX_POLICY" | "ROLLING_WEDGE_INVESTMENT";
 export interface ExactControlPlaneReader {
   readDriveText(fileId: string): Promise<string>;
   readSheet(spreadsheetId: string, sheetName: string, range: string): Promise<string[][]>;
+  /**
+   * Owner-provided independent signer attestation, NOT a boolean parsed from
+   * the Manifest. No live adapter is installed before R4 Owner acceptance.
+   * Absence fails closed and must never be replaced with caller assertion.
+   */
+  verifyBootstrapPublisher?(evidence: {
+    manifestFileId: string; grantKey: string; authorityEpoch: string;
+    publisherProvenance: string; publisherProofRef: string;
+  }): Promise<boolean>;
 }
 
 export interface TaskRegistration {
@@ -241,11 +250,12 @@ export async function loadPublishedBootstrapGrants(
   if (!metadata.Bootstrap_Grant_Projection_Tab) return new Map();
   if (metadata.Bootstrap_Grant_Projection_Tab !== "Initial_Baseline_Grants")
     throw new Error("BOOTSTRAP_PROJECTION_TAB_UNREGISTERED");
-  const values = await reader.readSheet(manifestFileId,metadata.Bootstrap_Grant_Projection_Tab,"A1:L200");
+  const values = await reader.readSheet(manifestFileId,metadata.Bootstrap_Grant_Projection_Tab,"A1:P200");
   if (!values.length) throw new Error("BOOTSTRAP_PROJECTION_EMPTY");
   const required=["Task_ID","Manifest_ID","Manifest_Fingerprint","Authority_Epoch",
     "Dataset_ID","Instance_ID","Logical_Member","Writer_ID","Reader_ID",
-    "Allowed_Fields","Idempotency_Key","Grant_State"];
+    "Allowed_Fields","Idempotency_Key","Grant_State",
+    "Issued_At","Expires_At","Publisher_Provenance","Publisher_Proof_Ref"];
   if (required.some((col,i)=>values[0]?.[i]!==col))
     throw new Error("BOOTSTRAP_PROJECTION_SCHEMA_INVALID");
   const map=new Map<string,BootstrapGrantProjection>();
@@ -258,6 +268,20 @@ export async function loadPublishedBootstrapGrants(
     if (!["ACTIVE","REVOKED","DISABLED"].includes(r.Grant_State))
       throw new Error("BOOTSTRAP_PROJECTION_STATE_INVALID");
     if (r.Grant_State!=="ACTIVE") continue;
+    // Strict UTC issuance/expiry. The timestamps are candidate policy fields,
+    // not sufficient to prove the issuer or authorize a production Grant.
+    const iso = /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?Z$/;
+    const issuedAtMs=Date.parse(r.Issued_At);
+    const expiresAtMs=Date.parse(r.Expires_At);
+    if (!iso.test(r.Issued_At) || !iso.test(r.Expires_At) ||
+        !Number.isSafeInteger(issuedAtMs) || !Number.isSafeInteger(expiresAtMs) ||
+        expiresAtMs<=issuedAtMs || !r.Publisher_Provenance || !r.Publisher_Proof_Ref)
+      throw new Error("BOOTSTRAP_PROJECTION_EXPIRY_OR_PROVENANCE_INVALID");
+    const publisherVerified=await reader.verifyBootstrapPublisher?.({
+      manifestFileId,grantKey:key,authorityEpoch:r.Authority_Epoch,
+      publisherProvenance:r.Publisher_Provenance,publisherProofRef:r.Publisher_Proof_Ref,
+    }) ?? false;
+    if (!publisherVerified) throw new Error("BOOTSTRAP_PUBLISHER_NOT_VERIFIED");
     const entry=accesses.filter(x=>x.datasetId===r.Dataset_ID && x.instanceId===r.Instance_ID && x.logicalMember===r.Logical_Member);
     const fields=r.Allowed_Fields.split(",").map(x=>x.trim()).filter(Boolean);
     if (entry.length!==1 || entry[0].businessAuthorityState!=="DRAFT" ||
@@ -280,6 +304,8 @@ export async function loadPublishedBootstrapGrants(
       authorityEpoch:r.Authority_Epoch,datasetId:r.Dataset_ID,instanceId:r.Instance_ID,
       logicalMember:r.Logical_Member,writerId:r.Writer_ID,readerId:r.Reader_ID,
       fields:new Set(fields),idempotencyKey:r.Idempotency_Key,state:"ACTIVE",
+      issuedAtMs,expiresAtMs,publisherProvenance:r.Publisher_Provenance,
+      publisherVerified,
     });
   }
   return map;
