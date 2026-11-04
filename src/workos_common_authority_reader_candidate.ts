@@ -51,7 +51,7 @@ export interface ResolvedCandidateAuthority {
   readonly memberByTask: Readonly<Record<CommonTaskId, ManifestMember>>;
 }
 const HEX = /^[a-f0-9]{64}$/;
-const ID = /^[a-zA-Z0-9_-]{8,160}$/;
+const ID = /^[a-zA-Z0-9_-]{1,160}$/;
 const AP = [
   "Authority_Scope_Fingerprint","Current_Committed_Cutover_ID",
   "Current_Activation_Epoch","Registry_Snapshot_ID","Manifest_Set_ID",
@@ -118,11 +118,12 @@ function validateBundle(pointer:Pointer):{bundle:CandidateAuthorityBundle;member
     if(!compatibility||typeof compatibility!=="object"||Array.isArray(compatibility))
       throw new Error("CANDIDATE_COMPATIBILITY_INVALID");
     const c=compatibility as Record<string,unknown>;
-    if(c.rollingWedgeCompanies!==undefined &&
-      (!Array.isArray(c.rollingWedgeCompanies)||!["ENPLAS","SERVICENOW","FIGMA"].every(x=>c.rollingWedgeCompanies!.includes(x))))
+    const rw=c.rollingWedgeCompanies, fx=c.fxPolicyDatasets;
+    if(rw!==undefined &&
+      (!Array.isArray(rw)||!["ENPLAS","SERVICENOW","FIGMA"].every(x=>rw.includes(x))))
       throw new Error("CANDIDATE_RW_LEGACY_COMPATIBILITY_DRIFT");
-    if(c.fxPolicyDatasets!==undefined &&
-      (!Array.isArray(c.fxPolicyDatasets)||!c.fxPolicyDatasets.includes("FX_POLICY_EVIDENCE_LOG")))
+    if(fx!==undefined &&
+      (!Array.isArray(fx)||!fx.includes("FX_POLICY_EVIDENCE_LOG")))
       throw new Error("CANDIDATE_FX_COMPATIBILITY_DRIFT");
   }
   return {bundle:{authorityPublication:ap,cutover:co,
