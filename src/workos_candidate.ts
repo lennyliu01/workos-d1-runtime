@@ -501,7 +501,8 @@ async function handleRead(body: ReadRequest, env: CandidateEnv, source: TrustedC
       return Response.json({
         status: "SUCCESS", ...b, selector: "CURRENT", version: row.version,
         previous_version: row.previous_version, payload: parsePayload(row.payload_json),
-        invocation_id: row.invocation_id, db_written_at: row.db_written_at,
+        invocation_id: row.invocation_id, idempotency_key: row.idempotency_key,
+        db_written_at: row.db_written_at,
         db_read_at: row.db_read_at ?? null,
       });
     } catch { return fail("PERSISTED_PAYLOAD_INVALID", 500); }
@@ -623,7 +624,32 @@ async function replayCurrent(body: WriteRequest, control: DatasetControl, env: C
       dataset_id: body.dataset_id, instance_id: body.instance_id, idempotency_key: body.idempotency_key,
     });
   }
+  // One-use DRAFT grant is consumed by the authoritative D1 v0->v1 row.
+  // A later request cannot claim WRITE SUCCESS even with identical idempotency.
+  if (body.write_operation === "INITIAL_BASELINE")
+    return fail("BOOTSTRAP_GRANT_CONSUMED", 409, {
+      dataset_id: body.dataset_id, instance_id: body.instance_id,
+      version: row.version, idempotency_key: body.idempotency_key,
+    });
   return currentSuccess(body, control, row, true);
+}
+
+async function reconcileOwnBootstrapWrite(
+  body: WriteRequest, control: DatasetControl, env: CandidateEnv,
+  payloadJson: string, invocationId: string,
+): Promise<Response> {
+  // Only the currently executing invocation may recover an ambiguous D1
+  // response; a competing invocation or a retry has a different UUID.
+  const row=await currentByInvocation(env,invocationId);
+  if (row) {
+    if (row.dataset_id!==body.dataset_id || row.instance_id!==body.instance_id ||
+        row.version!==1 || row.previous_version!==0 ||
+        row.payload_json!==payloadJson || row.idempotency_key!==body.idempotency_key)
+      return fail("BOOTSTRAP_READBACK_MISMATCH",409);
+    return currentSuccess(body,control,row,false);
+  }
+  // No own receipt: never claim success from a competitor's matching payload.
+  return staleCurrent(body,env);
 }
 
 async function staleCurrent(body: WriteRequest, env: CandidateEnv): Promise<Response> {
@@ -657,6 +683,8 @@ async function handleCurrentWrite(body: WriteRequest, control: DatasetControl, e
     }
   } catch {
     try {
+      if (body.write_operation==="INITIAL_BASELINE")
+        return await reconcileOwnBootstrapWrite(body,control,env,payloadJson,invocationId);
       const replay = await replayCurrent(body, control, env, payloadJson);
       if (replay) return replay;
       return await staleCurrent(body, env);
@@ -665,6 +693,8 @@ async function handleCurrentWrite(body: WriteRequest, control: DatasetControl, e
 
   if (!result.success || result.meta?.changes !== 1) {
     try {
+      if (body.write_operation==="INITIAL_BASELINE")
+        return await reconcileOwnBootstrapWrite(body,control,env,payloadJson,invocationId);
       const replay = await replayCurrent(body, control, env, payloadJson);
       if (replay) return replay;
       return await staleCurrent(body, env);
