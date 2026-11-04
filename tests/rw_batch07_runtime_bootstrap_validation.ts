@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {handleWorkOsCandidatePersistence} from "../src/workos_candidate.js";
 import {authorizePersistence, WORKOS_D1_GATE_IMPLEMENTATION_ID,WORKOS_D1_GATE_IMPLEMENTATION_VERSION,ACCEPTED_GATE_CONFIG_FINGERPRINT,type GateProjectionSnapshot, type ManifestAccessRow} from "../src/workos_persistent_gate_projection.js";
 import {loadPublishedBootstrapGrants} from "../src/workos_control_plane_loader.js";
-import {initializeBaselineWithReadback,projectRWInitialBaselineWire} from "../src/workos_initial_baseline_candidate.js";
+import {initializeBaselineWithReadback,recoverBaselineReadbackOnly,projectRWInitialBaselineWire} from "../src/workos_initial_baseline_candidate.js";
 import {RW_CURRENT_STATE_FIELDS,FROZEN_RESEARCH_FIELDS,FROZEN_SOURCE_FIELDS,canonicalRWJson,validateRWInitialBaselineWire} from "../src/rw_current_state_wire.js";
 
 const ids=["DSG","DOL","WSP","GIBA","NA","ENB","ATD"];
@@ -46,12 +46,14 @@ const dynamicAccesses:ManifestAccessRow[]=ids.map(id=>({
   operations:new Set(["CONDITIONAL_CURRENT_STATE"]),fields:new Set(fields)}],
  writeMode:"CURRENT_STATE",dynamicInstance:true,businessAuthorityState:"DRAFT",
 }));
+const issued=Date.now()-60000,expires=Date.now()+3600000;
 const syntheticGrants=new Map(ids.map(id=>["RW_CURRENT_STATE\u0000"+id,{
  taskId:"ROLLING_WEDGE_INVESTMENT",manifestId:"M1",manifestFingerprint:"MF11",
  authorityEpoch:"E11",datasetId:"RW_CURRENT_STATE",instanceId:id,
  logicalMember:"RW_CURRENT_STATE",writerId:"Rolling_Wedge_Workflow",
  readerId:"Rolling_Wedge_Workflow",fields:new Set(fields),
  idempotencyKey:key(id),state:"ACTIVE" as const,
+ issuedAtMs:issued,expiresAtMs:expires,publisherProvenance:"ISOLATED_TEST_SIGNER",publisherVerified:true,
 }] as const));
 const activeLegacyIds=["ENPLAS","SERVICENOW","FIGMA"] as const;
 const activeLegacyAccesses:ManifestAccessRow[]=activeLegacyIds.map((id,i)=>({
@@ -129,7 +131,7 @@ for(const id of ids){
  assert.equal(w.body.version,1);
  const r=await send(read(id));assert.equal(r.status,200,`DRAFT read ${id}: ${JSON.stringify(r.body)}`);
  assert.deepEqual(r.body.payload,payload(id));checks+=2;
- const replay=await send(write(id));assert.equal(replay.status,200);assert.equal(replay.body.replayed,true);checks++;
+ const replay=await send(write(id));assert.equal(replay.status,409);checks++;
 }
 assert.equal(dbRecords.size,7);
 for(const id of ids){const row=dbRecords.get(`RW_CURRENT_STATE:${id}`)!;assert.equal(row.version,1);assert.deepEqual(JSON.parse(row.payload_json),payload(id));checks++;}
@@ -235,7 +237,8 @@ const noLegacySource=await handleWorkOsCandidatePersistence(
 assert.equal(noLegacySource.status,403);checks++;
 // TS gate synthetic accepted snapshot denies DRAFT absent trusted grant, and grants only exact.
 const entry:ManifestAccessRow={datasetId:"RW_CURRENT_STATE",instanceId:"DSG",logicalMember:"RW_CURRENT_STATE",contractFingerprint:"contract",physicalContractFingerprint:"contract",readers:new Set(["Rolling_Wedge_Workflow"]),writerScopes:[{writerId:"Rolling_Wedge_Workflow",operations:new Set(["CONDITIONAL_CURRENT_STATE"]),fields:new Set(fields)}],writeMode:"CURRENT_STATE",dynamicInstance:true,businessAuthorityState:"DRAFT"};
-const grant={taskId:"ROLLING_WEDGE_INVESTMENT",manifestId:"M1",manifestFingerprint:"MF11",authorityEpoch:"E11",datasetId:"RW_CURRENT_STATE",instanceId:"DSG",logicalMember:"RW_CURRENT_STATE",writerId:"Rolling_Wedge_Workflow",readerId:"Rolling_Wedge_Workflow",fields:new Set(fields),idempotencyKey:key("DSG"),state:"ACTIVE" as const};
+const grant={taskId:"ROLLING_WEDGE_INVESTMENT",manifestId:"M1",manifestFingerprint:"MF11",authorityEpoch:"E11",datasetId:"RW_CURRENT_STATE",instanceId:"DSG",logicalMember:"RW_CURRENT_STATE",writerId:"Rolling_Wedge_Workflow",readerId:"Rolling_Wedge_Workflow",fields:new Set(fields),idempotencyKey:key("DSG"),state:"ACTIVE" as const,
+ issuedAtMs:issued,expiresAtMs:expires,publisherProvenance:"ISOLATED_TEST_SIGNER",publisherVerified:true};
 const snapshot:GateProjectionSnapshot={
  gateImplementationId:WORKOS_D1_GATE_IMPLEMENTATION_ID,gateImplementationVersion:WORKOS_D1_GATE_IMPLEMENTATION_VERSION,gateConfigFingerprint:ACCEPTED_GATE_CONFIG_FINGERPRINT,
  authorityPublicationState:"EXACT_ONE",authorityPublication:{authorityScopeFingerprint:"scope",currentCommittedCutoverId:"cut",currentActivationEpoch:"E11",registrySnapshotId:"rs",manifestSetId:"set",gateConfigFingerprint:ACCEPTED_GATE_CONFIG_FINGERPRINT,workflowSetFingerprint:"wf"},
@@ -247,6 +250,13 @@ const authBase={taskId:"ROLLING_WEDGE_INVESTMENT",callerIdentity:"Rolling_Wedge_
 const aw={...authBase,operation:"WRITE" as const,writeOperation:"INITIAL_BASELINE",fields:new Set(fields),expectedVersion:0,idempotencyKey:key("DSG")};
 const ar={...authBase,operation:"READ" as const,readPurpose:"INITIAL_BASELINE_READBACK",expectedVersion:1,idempotencyKey:key("DSG")};
 assert.equal(authorizePersistence(snapshot,aw),entry);assert.equal(authorizePersistence(snapshot,ar),entry);checks+=2;
+const expiredGrant={...grant,expiresAtMs:Date.now()-1};
+const expiredSnapshot={...snapshot,bootstrapGrants:new Map([["RW_CURRENT_STATE"+String.fromCharCode(0)+"DSG",expiredGrant]])};
+assert.throws(()=>authorizePersistence(expiredSnapshot,aw),/BUSINESS_AUTHORITY_NOT_READY/);checks++;
+assert.equal(authorizePersistence(expiredSnapshot,ar),entry);checks++;
+const revokedSnapshot={...snapshot,bootstrapGrants:new Map([["RW_CURRENT_STATE"+String.fromCharCode(0)+"DSG",{...grant,state:"REVOKED" as const}]])};
+assert.throws(()=>authorizePersistence(revokedSnapshot,aw),/BUSINESS_AUTHORITY_NOT_READY/);checks++;
+assert.throws(()=>authorizePersistence(revokedSnapshot,ar),/BUSINESS_AUTHORITY_NOT_READY/);checks++;
 assert.throws(()=>authorizePersistence({...snapshot,bootstrapGrants:new Map()},aw),/BUSINESS_AUTHORITY_NOT_READY/);checks++;
 assert.throws(()=>authorizePersistence(snapshot,{...aw,writeOperation:"NORMAL"}),/BUSINESS_AUTHORITY_NOT_READY/);checks++;
 assert.throws(()=>authorizePersistence(snapshot,{...aw,expectedVersion:1}),/BUSINESS_AUTHORITY_NOT_READY/);checks++;
@@ -263,25 +273,38 @@ const boundFetch=(async(_input:RequestInfo|URL, init?:RequestInit)=>{
  );
 }) as typeof fetch;
 const cpBound={task:{taskId:"ROLLING_WEDGE_INVESTMENT"},gate:snapshot};
+// New isolated D1 fixture for initializer's first authorized write.
+dbRecords.delete("RW_CURRENT_STATE:DSG");
 const integrated=await initializeBaselineWithReadback(cpBound as any,"DSG",payload("DSG"),"test-isolated-secret",boundFetch);
 assert.equal(integrated.write.version,1);
 assert.deepEqual(integrated.readback.payload,payload("DSG"));
-assert.equal(dbRecords.size,10);checks+=3;
+assert.equal(integrated.readback.idempotency_key,key("DSG"));
+const recovered=await recoverBaselineReadbackOnly(cpBound as any,"DSG",payload("DSG"),"test-isolated-secret",boundFetch);
+assert.equal(recovered.recovery,"READBACK_ONLY");
+assert.deepEqual(recovered.readback.payload,payload("DSG"));
+const consumed=await send(write("DSG"));assert.equal(consumed.status,409);
+assert.equal(dbRecords.size,10);checks+=7;
 await assert.rejects(()=>initializeBaselineWithReadback({task:{taskId:"ROLLING_WEDGE_INVESTMENT"},gate:{...snapshot,bootstrapGrants:new Map()}} as any,"DSG",payload("DSG"),"test-isolated-secret",boundFetch),/BOOTSTRAP_GRANT_OR_FIELDS_MISMATCH/);checks++;
 // New control projection is read only from the ACTIVE manifest exact source.
 const grantHeader=["Task_ID","Manifest_ID","Manifest_Fingerprint","Authority_Epoch",
  "Dataset_ID","Instance_ID","Logical_Member","Writer_ID","Reader_ID",
- "Allowed_Fields","Idempotency_Key","Grant_State"];
+ "Allowed_Fields","Idempotency_Key","Grant_State",
+ "Issued_At","Expires_At","Publisher_Provenance","Publisher_Proof_Ref"];
 const manifestMeta={Manifest_ID:"M1",Manifest_Fingerprint:"MF11",Bootstrap_Grant_Projection_Tab:"Initial_Baseline_Grants"};
 const grantRow=["ROLLING_WEDGE_INVESTMENT","M1","MF11","E11","RW_CURRENT_STATE","DSG","RW_CURRENT_STATE",
- "Rolling_Wedge_Workflow","Rolling_Wedge_Workflow",fields.join(","),key("DSG"),"ACTIVE"];
-const grantReader={readDriveText:async()=>"",readSheet:async()=>[grantHeader,grantRow]};
+ "Rolling_Wedge_Workflow","Rolling_Wedge_Workflow",fields.join(","),key("DSG"),"ACTIVE",
+ new Date(issued).toISOString(),new Date(expires).toISOString(),"ISOLATED_TEST_SIGNER","TEST_PROOF_REF"];
+const grantReader={readDriveText:async()=>"",readSheet:async()=>[grantHeader,grantRow],
+ verifyBootstrapPublisher:async()=>true};
 const resolved=await loadPublishedBootstrapGrants(grantReader as any,"accepted-manifest-file",manifestMeta,"E11",[entry]);
 assert.equal(resolved.size,1);checks++;
+await assert.rejects(()=>loadPublishedBootstrapGrants({
+ readDriveText:async()=>"",readSheet:async()=>[grantHeader,grantRow]
+} as any,"accepted-manifest-file",manifestMeta,"E11",[entry]),/BOOTSTRAP_PUBLISHER_NOT_VERIFIED/);checks++;
 const missing=await loadPublishedBootstrapGrants(grantReader as any,"accepted-manifest-file",{Manifest_ID:"M1"},"E11",[entry]);
 assert.equal(missing.size,0);checks++;
 await assert.rejects(()=>loadPublishedBootstrapGrants(grantReader as any,"accepted-manifest-file",manifestMeta,"E10",[entry]),/BOOTSTRAP_PROJECTION_UNTRUSTED_OR_DRIFT/);checks++;
-await assert.rejects(()=>loadPublishedBootstrapGrants({readDriveText:async()=>"",readSheet:async()=>[grantHeader,grantRow,grantRow]} as any,"accepted-manifest-file",manifestMeta,"E11",[entry]),/BOOTSTRAP_PROJECTION_DUPLICATE/);checks++;
+await assert.rejects(()=>loadPublishedBootstrapGrants({readDriveText:async()=>"",readSheet:async()=>[grantHeader,grantRow,grantRow],verifyBootstrapPublisher:async()=>true} as any,"accepted-manifest-file",manifestMeta,"E11",[entry]),/BOOTSTRAP_PROJECTION_DUPLICATE/);checks++;
 
 const sourceResearch=researchPayload("GIBA");
 const projected=projectRWInitialBaselineWire(sourceResearch);
