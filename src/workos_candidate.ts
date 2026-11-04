@@ -1,4 +1,5 @@
 import { GoogleExactControlPlaneReader, loadControlPlane, type LoadedControlPlane } from "./workos_control_plane_loader.js";
+import { loadControlPlaneFromD1Candidate } from "./workos_common_authority_reader_candidate.js";
 import { authorizePersistence } from "./workos_persistent_gate_projection.js";
 import { validateRWInitialBaselineWire } from "./rw_current_state_wire.js";
 type ExecutionSurface = "CHAT" | "WORK";
@@ -27,6 +28,13 @@ interface CandidateEnv {
   DB: { prepare(query: string): D1PreparedStatement };
   RUNTIME_SECRET?: string;
   WORKOS_CONTROL_PLANE_TOKEN?: string;
+  /** Non-production opt-in only: never set on any accepted deployment. */
+  WORKOS_D1_COMMON_READER_CANDIDATE?: "ENABLED" | "DISABLED";
+  WORKOS_D1_EXPECTED_EPOCH?: string;
+  WORKOS_D1_EXPECTED_SOURCE_FINGERPRINT?: string;
+  WORKOS_D1_EXPECTED_BUNDLE_FINGERPRINT?: string;
+  WORKOS_D1_EXPECTED_PUBLICATION_ID?: string;
+  WORKOS_D1_EXPECTED_PUBLISHER_INVOCATION_ID?: string;
 }
 
 interface DatasetControl {
@@ -733,10 +741,25 @@ export async function handleWorkOsCandidatePersistence(
   if (authError) return authError;
   const source: TrustedControlPlaneSource = trustedSource ?? (async () => {
     if (!env.WORKOS_CONTROL_PLANE_TOKEN) throw new Error("CONTROL_PLANE_TOKEN_MISSING");
-    return loadControlPlane(
-      new GoogleExactControlPlaneReader(env.WORKOS_CONTROL_PLANE_TOKEN),
-      "ROLLING_WEDGE_INVESTMENT",
-    );
+    const google = new GoogleExactControlPlaneReader(env.WORKOS_CONTROL_PLANE_TOKEN);
+    if (env.WORKOS_D1_COMMON_READER_CANDIDATE === "ENABLED") {
+      // No Sheets selector fallback on missing/stale/bad CURRENT, ever.
+      return loadControlPlaneFromD1Candidate(
+        google, "ROLLING_WEDGE_INVESTMENT", env.DB,
+        {
+          epoch: Number(env.WORKOS_D1_EXPECTED_EPOCH),
+          sourceFingerprint: env.WORKOS_D1_EXPECTED_SOURCE_FINGERPRINT ?? "",
+          bundleFingerprint: env.WORKOS_D1_EXPECTED_BUNDLE_FINGERPRINT ?? "",
+          publicationId: env.WORKOS_D1_EXPECTED_PUBLICATION_ID ?? "",
+          publisherInvocationId: env.WORKOS_D1_EXPECTED_PUBLISHER_INVOCATION_ID ?? "",
+        },
+      );
+    }
+    if (env.WORKOS_D1_COMMON_READER_CANDIDATE &&
+        env.WORKOS_D1_COMMON_READER_CANDIDATE !== "DISABLED")
+      throw new Error("INVALID_D1_CANDIDATE_READER_MODE");
+    // Historical unchanged path, NOT counted as migrated or cut over.
+    return loadControlPlane(google, "ROLLING_WEDGE_INVESTMENT");
   });
   const body = await parseJson(request);
   if (validRead(body)) return handleRead(body, env, source);
