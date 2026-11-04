@@ -49,7 +49,12 @@ export interface BootstrapGrantProjection {
   readerId: string;
   fields: ReadonlySet<string>;
   idempotencyKey: string;
-  state: "ACTIVE" | "DISABLED";
+  state: "ACTIVE" | "DISABLED" | "REVOKED";
+  /** Validated by the exact publisher-owned loader; never from HTTP input. */
+  issuedAtMs: number;
+  expiresAtMs: number;
+  publisherProvenance: string;
+  publisherVerified: boolean;
 }
 
 export interface GateProjectionSnapshot {
@@ -185,7 +190,11 @@ function draftGrant(snapshot: GateProjectionSnapshot, entry: ManifestAccessRow):
       grant.datasetId !== entry.datasetId || grant.instanceId !== entry.instanceId ||
       grant.logicalMember !== entry.logicalMember ||
       grant.writerId !== "Rolling_Wedge_Workflow" || grant.readerId !== "Rolling_Wedge_Workflow" ||
-      !grant.idempotencyKey || grant.fields.size === 0) return null;
+      !grant.idempotencyKey || grant.fields.size === 0 ||
+      grant.publisherVerified !== true || !grant.publisherProvenance ||
+      !Number.isSafeInteger(grant.issuedAtMs) ||
+      !Number.isSafeInteger(grant.expiresAtMs) ||
+      grant.expiresAtMs <= grant.issuedAtMs) return null;
   return grant;
 }
 function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
@@ -199,7 +208,10 @@ function allowDraft(snapshot: GateProjectionSnapshot, entry: ManifestAccessRow, 
     return request.readPurpose === "INITIAL_BASELINE_READBACK" &&
       request.expectedVersion === 1 && request.idempotencyKey === grant.idempotencyKey;
   }
-  return request.writeOperation === "INITIAL_BASELINE" && request.expectedVersion === 0 &&
+  // The Worker's clock, not the HTTP payload, is the candidate trusted time.
+  // Expired grants may only perform exact first-write recovery READBACK.
+  return Date.now() >= grant.issuedAtMs && Date.now() < grant.expiresAtMs &&
+    request.writeOperation === "INITIAL_BASELINE" && request.expectedVersion === 0 &&
     request.idempotencyKey === grant.idempotencyKey &&
     sameSet(request.fields ?? new Set(), grant.fields) &&
     entry.writerScopes.some(scope => scope.writerId === grant.writerId &&
