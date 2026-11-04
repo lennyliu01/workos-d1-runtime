@@ -1,13 +1,14 @@
 name: RW Batch07 Candidate Runtime Tests
 on:
   push:
-    branches: [candidate/rw-batch07-bootstrap-20261014]
+    branches: [candidate/rw-batch07-bootstrap-20261014, candidate/rw-batch07-r4-runtime-integration-20261104-01]
   pull_request:
     paths:
       - "src/workos_candidate.ts"
       - "src/workos_persistent_gate_projection.ts"
       - "src/workos_initial_baseline_candidate.ts"
       - "tests/rw_batch07_runtime_bootstrap_validation.ts"
+      - "tests/rw_batch07_r4_miniflare_d1_validation.ts"
 permissions:
   contents: read
 jobs:
@@ -21,4 +22,5 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm run typecheck
       - run: npx tsx tests/rw_batch07_runtime_bootstrap_validation.ts
+      - run: npm run test:rw-r4-d1
       - run: npm run test:workos-business-executor
