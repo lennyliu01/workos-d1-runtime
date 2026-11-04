@@ -13,6 +13,7 @@ import {
   d1CandidateProjectionReader,type ExpectedCandidateGeneration,
 } from "../src/workos_common_authority_reader_candidate.js";
 import {REPOSITORY_CUTOVER_CONTROL_ID} from "../src/workos_control_plane_loader.js";
+import {handleWorkOsCandidatePersistence} from "../src/workos_candidate.js";
 
 const mf=new Miniflare({modules:true,
   script:"export default { fetch(){ return new Response('isolated') } }",
@@ -165,6 +166,23 @@ try{
   const fresh11=await Promise.all(FIVE_TASK_IDS.map(()=>resolveCandidateAuthority(DB,exp11)));
   eq(new Set(fresh11.map(x=>x.pointer.publisher_invocation_id)).size,1,
     "all five cold-start readers agree after switch");
+  // Candidate worker must never turn its old unfenced WRITE path into a
+  // D1-selected write capability. Only read-only opt-in is eligible.
+  const writeReq=new Request("https://candidate.invalid/persistence",{
+    method:"POST",headers:{"Authorization":"Bearer NONPROD_TEST_SECRET",
+      "Content-Type":"application/json"},
+    body:JSON.stringify({task_id:"ROLLING_WEDGE_INVESTMENT",
+      caller_identity:"Rolling_Wedge_Workflow",operation:"WRITE",
+      dataset_id:"RW_CURRENT_STATE",instance_id:"ENPLAS",
+      idempotency_key:"NONPROD_WRITE_PROBE",payload:{value:1}}),
+  });
+  const blockedWrite=await handleWorkOsCandidatePersistence(writeReq,{
+    DB,RUNTIME_SECRET:"NONPROD_TEST_SECRET",
+    WORKOS_D1_COMMON_READER_CANDIDATE:"ENABLED",
+  });
+  eq(blockedWrite.status,503,"candidate write blocked before business mutation");
+  eq((await blockedWrite.json() as {error:string}).error,
+    "CANDIDATE_WRITE_FENCE_NOT_INTEGRATED","reject unfenced candidate writes");
   await DB.prepare("DELETE FROM workos_authority_pointer_candidate WHERE selector_key='CURRENT'").run();
   await rejects(()=>resolveCandidateAuthority(DB,exp11),/CURRENT_UNAVAILABLE/,
     "missing CURRENT always fail closed");
