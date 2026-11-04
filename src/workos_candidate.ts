@@ -1,5 +1,5 @@
 import { GoogleExactControlPlaneReader, loadControlPlane, type LoadedControlPlane } from "./workos_control_plane_loader.js";
-import { loadControlPlaneFromD1Candidate } from "./workos_common_authority_reader_candidate.js";
+import { loadControlPlaneFromD1Candidate, resolveCandidateAuthority, type ExpectedCandidateGeneration } from "./workos_common_authority_reader_candidate.js";
 import { authorizePersistence } from "./workos_persistent_gate_projection.js";
 import { validateRWInitialBaselineWire } from "./rw_current_state_wire.js";
 type ExecutionSurface = "CHAT" | "WORK";
@@ -732,6 +732,16 @@ async function handleWrite(body: WriteRequest, env: CandidateEnv, source: Truste
     : handleCurrentWrite(body, resolved, env, payloadJson);
 }
 
+function expectedD1CandidateGeneration(env: CandidateEnv): ExpectedCandidateGeneration {
+  return {
+    epoch: Number(env.WORKOS_D1_EXPECTED_EPOCH),
+    sourceFingerprint: env.WORKOS_D1_EXPECTED_SOURCE_FINGERPRINT ?? "",
+    bundleFingerprint: env.WORKOS_D1_EXPECTED_BUNDLE_FINGERPRINT ?? "",
+    publicationId: env.WORKOS_D1_EXPECTED_PUBLICATION_ID ?? "",
+    publisherInvocationId: env.WORKOS_D1_EXPECTED_PUBLISHER_INVOCATION_ID ?? "",
+  };
+}
+
 export async function handleWorkOsCandidatePersistence(
   request: Request, env: CandidateEnv,
   /** Isolated tests may inject a trusted reader; HTTP callers cannot supply one. */
@@ -746,13 +756,7 @@ export async function handleWorkOsCandidatePersistence(
       // No Sheets selector fallback on missing/stale/bad CURRENT, ever.
       return loadControlPlaneFromD1Candidate(
         google, "ROLLING_WEDGE_INVESTMENT", env.DB,
-        {
-          epoch: Number(env.WORKOS_D1_EXPECTED_EPOCH),
-          sourceFingerprint: env.WORKOS_D1_EXPECTED_SOURCE_FINGERPRINT ?? "",
-          bundleFingerprint: env.WORKOS_D1_EXPECTED_BUNDLE_FINGERPRINT ?? "",
-          publicationId: env.WORKOS_D1_EXPECTED_PUBLICATION_ID ?? "",
-          publisherInvocationId: env.WORKOS_D1_EXPECTED_PUBLISHER_INVOCATION_ID ?? "",
-        },
+        expectedD1CandidateGeneration(env),
       );
     }
     if (env.WORKOS_D1_COMMON_READER_CANDIDATE &&
@@ -762,7 +766,22 @@ export async function handleWorkOsCandidatePersistence(
     return loadControlPlane(google, "ROLLING_WEDGE_INVESTMENT");
   });
   const body = await parseJson(request);
-  if (validRead(body)) return handleRead(body, env, source);
-  if (validWrite(body)) return handleWrite(body, env, source);
+  const d1CandidateMode = env.WORKOS_D1_COMMON_READER_CANDIDATE === "ENABLED";
+  if (validRead(body)) {
+    const result = await handleRead(body, env, source);
+    if (d1CandidateMode) {
+      // Re-resolve after provider read, not just during initial control-plane load.
+      // A switched CURRENT cannot return a response from a previous generation.
+      try { await resolveCandidateAuthority(env.DB, expectedD1CandidateGeneration(env)); }
+      catch { return fail("CANDIDATE_CURRENT_SWITCHED_DURING_READ", 503); }
+    }
+    return result;
+  }
+  if (validWrite(body)) {
+    // The old production Worker write path has not been wired to a same-SQL
+    // D1 generation fence; expose the new candidate reader as READ-ONLY.
+    if (d1CandidateMode) return fail("CANDIDATE_WRITE_FENCE_NOT_INTEGRATED", 503);
+    return handleWrite(body, env, source);
+  }
   return fail("INVALID_REQUEST", 400);
 }
