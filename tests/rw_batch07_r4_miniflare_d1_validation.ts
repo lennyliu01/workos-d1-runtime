@@ -27,7 +27,9 @@ let checks=0;
 const check=()=>{checks++};
 try {
   const DB=await mf.getD1Database("DB");
-  await DB.exec(readFileSync("migrations/0003_create_workos_candidate_persistence.sql","utf8"));
+  const ddl=readFileSync("migrations/0003_create_workos_candidate_persistence.sql","utf8")
+    .split("\n").filter(line=>!line.trimStart().startsWith("--")).join("\n");
+  await DB.exec(ddl);
   const env={DB,RUNTIME_SECRET:"isolated-r4-integration-only"} as any;
   const ids=["DSG","DOL","WSP","GIBA","NA","ENB","ATD"];
   const old=["ENPLAS","SERVICENOW","FIGMA"];
