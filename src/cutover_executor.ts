@@ -606,6 +606,91 @@ export class GoogleSheetsControlPlaneProvider implements ControlPlaneProvider {
     return { userEnteredValue: { stringValue: value === null ? "" : String(value) } };
   }
 
+  /**
+   * Non-production candidate primitive for one Sheets-level atomic Generation update.
+   * This is deliberately NOT a publisher invocation, exclusive-writer fence,
+   * expected-predecessor CAS, formal WorkOS grant, or a successful readback.
+   * The approved executor must establish those separately before this can be used.
+   */
+  async mutateAuthorityGenerationBatch(
+    authority: SheetsLocator,
+    generation: ExactRecord,
+    coupled: readonly { locator: SheetsLocator; value: ExactRecord }[] = [],
+  ): Promise<MutationResult> {
+    const authorityColumns = [
+      "Authority_Scope_Fingerprint",
+      "Current_Committed_Cutover_ID",
+      "Current_Activation_Epoch",
+      "Registry_Snapshot_ID",
+      "Manifest_Set_ID",
+      "Gate_Config_Fingerprint",
+      "Workflow_Set_Fingerprint",
+      "Published_At",
+    ];
+    if (
+      authority.provider !== "GOOGLE_SHEETS_V4" ||
+      authority.range !== "Authority_Publication!A2:H2" ||
+      authority.startRowIndex !== 1 ||
+      authority.startColumnIndex !== 0 ||
+      authority.columns.join("|") !== authorityColumns.join("|")
+    ) {
+      throw new Error("AUTHORITY_PUBLICATION_COMPLETE_A2_H2_REQUIRED");
+    }
+
+    const updates = [{ locator: authority, value: generation }, ...coupled];
+    const occupied = new Set<string>();
+    const requests = updates.map(({ locator, value }) => {
+      if (
+        locator.provider !== "GOOGLE_SHEETS_V4" ||
+        locator.spreadsheetId !== authority.spreadsheetId ||
+        !Number.isInteger(locator.sheetId) ||
+        !Number.isInteger(locator.startRowIndex) ||
+        !Number.isInteger(locator.startColumnIndex) ||
+        locator.startRowIndex < 0 ||
+        locator.startColumnIndex < 0 ||
+        locator.columns.length === 0 ||
+        new Set(locator.columns).size !== locator.columns.length ||
+        Object.keys(value).length !== locator.columns.length ||
+        !locator.columns.every((column) => Object.prototype.hasOwnProperty.call(value, column))
+      ) {
+        throw new Error("ATOMIC_PUBLICATION_UNSEALED_OR_CROSS_WORKBOOK_UPDATE");
+      }
+      for (let c = locator.startColumnIndex; c < locator.startColumnIndex + locator.columns.length; c++) {
+        const cell = `${locator.sheetId}:${locator.startRowIndex}:${c}`;
+        if (occupied.has(cell)) throw new Error("ATOMIC_PUBLICATION_OVERLAPPING_UPDATE");
+        occupied.add(cell);
+      }
+      return {
+        updateCells: {
+          range: {
+            sheetId: locator.sheetId,
+            startRowIndex: locator.startRowIndex,
+            endRowIndex: locator.startRowIndex + 1,
+            startColumnIndex: locator.startColumnIndex,
+            endColumnIndex: locator.startColumnIndex + locator.columns.length,
+          },
+          rows: [{ values: locator.columns.map((column) => this.cellData(value[column])) }],
+          fields: "userEnteredValue",
+        },
+      };
+    });
+
+    const url =
+      "https://sheets.googleapis.com/v4/spreadsheets/" +
+      encodeURIComponent(authority.spreadsheetId) +
+      ":batchUpdate";
+    try {
+      const response = await this.fetchImpl(url, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ requests }),
+      });
+      return { outcome: response.ok ? "CONFIRMED" : "AMBIGUOUS" };
+    } catch {
+      return { outcome: "AMBIGUOUS" };
+    }
+  }
+
   async mutateExact(locator: SheetsLocator, value: ExactRecord): Promise<MutationResult> {
     const cells = locator.columns.map((column) => this.cellData(value[column] ?? null));
     const url =
