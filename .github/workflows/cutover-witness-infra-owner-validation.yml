@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "src/cutover_executor.ts"
+      - "tests/rw_batch07_sheets_atomic_publication_validation.ts"
       - "src/cutover_witness_fixture.ts"
       - "tests/cutover_executor_owner_validation.ts"
       - "tests/cutover_candidate_binding_validation.ts"
@@ -29,5 +30,7 @@ jobs:
         run: npm run typecheck
       - name: Implementation-level owner validation
         run: npm run test:cutover-owner
+      - name: Nonproduction full-generation Sheets atomic request-shape validation
+        run: npx tsx tests/rw_batch07_sheets_atomic_publication_validation.ts
       - name: Successor identity and binding validation
         run: npx tsx tests/cutover_candidate_binding_validation.ts
