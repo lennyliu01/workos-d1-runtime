@@ -27,7 +27,11 @@ export type StopCode =
   | "WITNESS_FAULT_FORBIDDEN_IN_PRODUCTION"
   | "SESSION_MUTATION_CAPABILITY_CLOSED"
   | "SESSION_ID_MISMATCH"
-  | "RELAY_FINALITY_NOT_PROVEN";
+  | "RELAY_FINALITY_NOT_PROVEN"
+  | "PUBLISHER_GRANT_NOT_CONFIGURED"
+  | "PUBLISHER_INVOCATION_REPLAY"
+  | "OLD_REQUEST_FINALITY_NOT_PROVEN"
+  | "ATOMIC_GENERATION_NOT_SEALED";
 
 export type Scalar = string | number | boolean | null;
 export type ExactRecord = Readonly<Record<string, Scalar>>;
@@ -98,6 +102,30 @@ export class ProviderUnreadable extends Error {
 export interface ControlPlaneProvider {
   readExact(locator: SheetsLocator): Promise<ExactRecord>;
   mutateExact(locator: SheetsLocator, value: ExactRecord): Promise<MutationResult>;
+}
+
+
+/**
+ * Nonproduction-only seam. A real production grant issuer/fence is deliberately
+ * NOT implemented. An OAuth access token is never a WorkOS publication grant.
+ * The fixture fence must atomically reserve the invocation, exclude all writers,
+ * and attest that every older provider request has reached terminal finality.
+ * It must retain the reservation after ambiguous/failed execution; no lease
+ * expiry or fixed sleep is a substitute for terminal old-request proof.
+ */
+export interface NonproductionPublicationFence {
+  claimExclusive(invocationId: string, spreadsheetId: string): Promise<"ACQUIRED" | "DENIED">;
+  priorRequestsTerminal(invocationId: string): Promise<boolean>;
+  ownRequestFinality(invocationId: string): Promise<"APPLIED" | "NOT_APPLIED" | "UNKNOWN">;
+  completeVerified(invocationId: string): Promise<boolean>;
+}
+
+export interface AtomicGenerationProvider extends ControlPlaneProvider {
+  mutateAuthorityGenerationBatch(
+    authority: SheetsLocator,
+    generation: ExactRecord,
+    coupled: readonly { locator: SheetsLocator; value: ExactRecord }[],
+  ): Promise<MutationResult>;
 }
 
 export interface ExecutorSuccess {
@@ -450,6 +478,202 @@ export class ExecutorCore {
       recoveredSteps,
       mutatedSteps,
       reconciledAmbiguousSteps,
+    };
+  }
+
+
+  /**
+   * Isolated CUTOVER_EXECUTOR test invocation. It never accepts PRODUCTION,
+   * cannot route through src/index.ts or the existing witness Worker, and does
+   * not infer publication authority from Google OAuth/ACL. It consumes the same
+   * frozen transitionPlan and the PR #1233 whole-generation batch primitive.
+   *
+   * A production implementation would additionally require an accepted,
+   * durable external WorkOS grant issuer + exclusive terminal-request fence.
+   * There is intentionally no production fallback in this method.
+   */
+  async executeNonproductionAtomicPublication(
+    invocationId: string,
+    input: ExecutorInput,
+    fence?: NonproductionPublicationFence,
+  ): Promise<ExecutorResult> {
+    if (input.mode !== "WITNESS") {
+      return { ok: false, stop: "PRODUCTION_TARGET_DENIED" };
+    }
+    const boundary = witnessBoundaryStop(input.root);
+    if (boundary) return boundary;
+    if (!fence) return { ok: false, stop: "PUBLISHER_GRANT_NOT_CONFIGURED" };
+    if (typeof invocationId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(invocationId)) {
+      return { ok: false, stop: "ATOMIC_GENERATION_NOT_SEALED", detail: "invalid invocation identity" };
+    }
+
+    const steps = input.transitionPlan;
+    const authority = input.root.locators.authorityPublication;
+    const fullColumns = [
+      "Authority_Scope_Fingerprint",
+      "Current_Committed_Cutover_ID",
+      "Current_Activation_Epoch",
+      "Registry_Snapshot_ID",
+      "Manifest_Set_ID",
+      "Gate_Config_Fingerprint",
+      "Workflow_Set_Fingerprint",
+      "Published_At",
+    ];
+    if (
+      steps.length === 0 ||
+      steps[0].id !== "AUTHORITY_PUBLICATION" ||
+      locatorKey(steps[0].target) !== locatorKey(authority) ||
+      authority.range !== "Authority_Publication!A2:H2" ||
+      authority.startRowIndex !== 1 ||
+      authority.startColumnIndex !== 0 ||
+      authority.columns.join("|") !== fullColumns.join("|")
+    ) {
+      return { ok: false, stop: "ATOMIC_GENERATION_NOT_SEALED" };
+    }
+    const sourceKeys = new Set(Object.values(input.root.locators).slice(1).map(locatorKey));
+    const seen = new Set<string>();
+    for (const step of steps) {
+      const key = locatorKey(step.target);
+      if (
+        seen.has(key) ||
+        !targetAllowed(input.root, step.target) ||
+        locatorDenied(step.target) ||
+        step.target.spreadsheetId !== authority.spreadsheetId ||
+        Object.keys(step.expectedBefore).length !== step.target.columns.length ||
+        Object.keys(step.desiredAfter).length !== step.target.columns.length ||
+        !step.target.columns.every((column) =>
+          Object.prototype.hasOwnProperty.call(step.expectedBefore, column) &&
+          Object.prototype.hasOwnProperty.call(step.desiredAfter, column)) ||
+        (step !== steps[0] && sourceKeys.has(key))
+      ) {
+        return { ok: false, stop: "ATOMIC_GENERATION_NOT_SEALED", detail: step.id };
+      }
+      seen.add(key);
+    }
+    const intended = steps[0].desiredAfter;
+    if (
+      !Number.isInteger(input.expectedPredecessorEpoch) ||
+      !Number.isInteger(input.targetEpoch) ||
+      input.targetEpoch <= input.expectedPredecessorEpoch ||
+      asString(steps[0].expectedBefore.Current_Committed_Cutover_ID) !== input.expectedPredecessorCutoverId ||
+      parseInteger(steps[0].expectedBefore.Current_Activation_Epoch) !== input.expectedPredecessorEpoch ||
+      parseInteger(intended.Current_Activation_Epoch) !== input.targetEpoch ||
+      asString(intended.Current_Committed_Cutover_ID) !== asString(input.frozenActivation.fields.Cutover_ID) ||
+      !asString(intended.Published_At) ||
+      !["Authority_Scope_Fingerprint", "Registry_Snapshot_ID", "Manifest_Set_ID",
+        "Gate_Config_Fingerprint", "Workflow_Set_Fingerprint"].every(
+          (field) => exactEqual(intended[field], input.frozenActivation.fields[field])
+        )
+    ) {
+      return { ok: false, stop: "ACTIVATION_OBJECT_DRIFT" };
+    }
+
+    // This must be a persistent, atomic exclusive claim in any real adapter.
+    // Mock claims are adequate ONLY for this nonproduction test entry.
+    let claimed: "ACQUIRED" | "DENIED";
+    try {
+      claimed = await fence.claimExclusive(invocationId, authority.spreadsheetId);
+    } catch {
+      return { ok: false, stop: "OLD_REQUEST_FINALITY_NOT_PROVEN" };
+    }
+    if (claimed !== "ACQUIRED") return { ok: false, stop: "PUBLISHER_INVOCATION_REPLAY" };
+
+    let oldTerminal = false;
+    try {
+      oldTerminal = await fence.priorRequestsTerminal(invocationId);
+    } catch {
+      oldTerminal = false;
+    }
+    if (!oldTerminal) {
+      return { ok: false, stop: "OLD_REQUEST_FINALITY_NOT_PROVEN" };
+    }
+
+    const read = async (locator: SheetsLocator): Promise<ExactRecord | null> => {
+      try { return await this.provider.readExact(locator); } catch { return null; }
+    };
+    const session = await read(input.root.locators.sessionCapability);
+    const candidate = await read(input.root.locators.candidateActivation);
+    const protection = await read(input.root.locators.protection);
+    const usedEpochs = await read(input.root.locators.usedEpochs);
+    const before = await read(authority);
+    if (!session || !candidate || !protection || !usedEpochs || !before) {
+      return { ok: false, stop: "SOURCE_UNREADABLE" };
+    }
+    if (session.Session_ID !== input.sessionId || session.Capability_State !== "OPEN") {
+      return { ok: false, stop: "SESSION_MUTATION_CAPABILITY_CLOSED" };
+    }
+    if (!exactEqual(candidate, input.frozenActivation.fields)) {
+      return { ok: false, stop: "ACTIVATION_OBJECT_DRIFT" };
+    }
+    if (
+      protection.Cutover_State !== "AUTHORITY_PREPARED" ||
+      protection.Migration_Write_Fence_State !== "ACTIVE" ||
+      protection.Maintenance_State !== "BLOCKED"
+    ) {
+      return { ok: false, stop: "TRANSITION_PROTECTION_NOT_VALID" };
+    }
+    let epochs: unknown;
+    try { epochs = JSON.parse(asString(usedEpochs.Used_Epochs_JSON) ?? ""); } catch { epochs = null; }
+    if (!Array.isArray(epochs) || !epochs.every((e) => Number.isSafeInteger(e))) {
+      return { ok: false, stop: "ACTIVATION_OBJECT_DRIFT", detail: "used epochs unreadable" };
+    }
+    if (epochs.includes(input.targetEpoch)) {
+      return { ok: false, stop: "NON_MONOTONIC_OR_REUSED_EPOCH" };
+    }
+    if (!exactEqual(before, steps[0].expectedBefore)) {
+      return { ok: false, stop: "PREDECESSOR_MISMATCH" };
+    }
+    for (const step of steps.slice(1)) {
+      const observed = await read(step.target);
+      if (!observed) return { ok: false, stop: "SOURCE_UNREADABLE", detail: step.id };
+      if (!exactEqual(observed, step.expectedBefore)) {
+        return { ok: false, stop: "ACTIVATION_OBJECT_DRIFT", detail: step.id };
+      }
+    }
+    const provider = this.provider as ControlPlaneProvider & Partial<AtomicGenerationProvider>;
+    if (typeof provider.mutateAuthorityGenerationBatch !== "function") {
+      return { ok: false, stop: "ATOMIC_GENERATION_NOT_SEALED", detail: "atomic provider capability missing" };
+    }
+
+    let mutation: MutationResult;
+    try {
+      mutation = await provider.mutateAuthorityGenerationBatch(
+        authority, intended,
+        steps.slice(1).map((step) => ({ locator: step.target, value: step.desiredAfter })),
+      );
+    } catch {
+      mutation = { outcome: "AMBIGUOUS" };
+    }
+
+    if (mutation.outcome !== "CONFIRMED") {
+      // An observed target row is insufficient: a timed-out older POST may
+      // still complete later. Demand same-invocation terminal attestation.
+      let finality: "APPLIED" | "NOT_APPLIED" | "UNKNOWN" = "UNKNOWN";
+      try { finality = await fence.ownRequestFinality(invocationId); } catch { /* fail closed */ }
+      if (finality !== "APPLIED") {
+        return { ok: false, stop: "MUTATION_OUTCOME_AMBIGUOUS" };
+      }
+    }
+    for (const step of steps) {
+      const after = await read(step.target);
+      if (!after || !exactEqual(after, step.desiredAfter)) {
+        return {
+          ok: false,
+          stop: mutation.outcome === "CONFIRMED" ? "POSTCONDITION_MISMATCH" : "MUTATION_OUTCOME_AMBIGUOUS",
+          detail: step.id,
+        };
+      }
+    }
+
+    let completed = false;
+    try { completed = await fence.completeVerified(invocationId); } catch { /* fail closed */ }
+    if (!completed) return { ok: false, stop: "MUTATION_OUTCOME_AMBIGUOUS", detail: "fence completion not durable" };
+    return {
+      ok: true,
+      status: "READY_FOR_RELAY",
+      recoveredSteps: [],
+      mutatedSteps: steps.map((step) => step.id),
+      reconciledAmbiguousSteps: mutation.outcome === "AMBIGUOUS" ? steps.map((step) => step.id) : [],
     };
   }
 
