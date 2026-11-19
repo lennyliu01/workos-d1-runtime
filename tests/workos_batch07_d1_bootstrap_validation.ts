@@ -174,8 +174,19 @@ for (const [id, ticker] of companies) {
     assert.equal(replay.status, 200);
     assert.equal(replay.body.replayed, true);
     assert.equal(mock.sqlWrites, 1);
-    const stale = await invoke({ ...write(id, ticker), idempotency_key: "stale-" + id },
-      mock, resolve);
+    // The old one-use scope must not authorize a new idempotency key.
+    const unauthorizedStale = await invoke(
+      { ...write(id, ticker), idempotency_key: "stale-" + id }, mock, resolve);
+    assert.equal(unauthorizedStale.status, 403);
+    assert.equal(mock.sqlWrites, 1);
+    // Even with a distinct bounded test-only grant, v0 cannot overwrite v1.
+    const staleContext = context(id, ticker);
+    staleContext.authorizeInitialBaseline = async scope =>
+      scope.instanceId === id && scope.expectedVersion === 0 &&
+      scope.idempotencyKey === "stale-" + id;
+    const stale = await invoke(
+      { ...write(id, ticker), idempotency_key: "stale-" + id },
+      mock, async () => staleContext);
     assert.equal(stale.status, 409);
     assert.equal(stale.body.error, "STALE_STATE");
     assert.equal(mock.sqlWrites, 2);
