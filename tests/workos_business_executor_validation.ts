@@ -151,3 +151,6 @@ const invalidRoleClient:any={responses:{create:async()=>({id:"r3",output:[],outp
 await assert.rejects(()=>runStructuredModelContext(invalidRoleClient,{context:"RW_MONITOR",taskId:"ROLLING_WEDGE_INVESTMENT",callerIdentity:"MONITOR",instructionText:"spec",runtimeProfileText:"profile",input:{},kind:"ROLE"},{workosRead:async()=>({}),workosWrite:async()=>({}),marketQuote:async()=>({}),sourceVerify:async()=>({})}),/MODEL_ROLE_RESULT_INVALID/);
 
 console.log("workos_business_executor_validation: PASS");
+
+// Candidate-only Batch07 D1 guard regression suite, executed by existing PR CI.
+await import("./workos_batch07_d1_bootstrap_validation.js");
