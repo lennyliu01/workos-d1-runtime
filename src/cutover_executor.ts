@@ -3,6 +3,7 @@ import {
   MATERIALIZED_FIXTURE_PRODUCTION_DENYLIST_ID,
   MATERIALIZED_FIXTURE_ROOT_ID,
   MATERIALIZED_FIXTURE_SPREADSHEET_ID,
+  MATERIALIZED_FIXTURE_LOCATORS,
 } from "./cutover_witness_fixture";
 export { FROZEN_PRODUCTION_DENYLIST } from "./cutover_witness_fixture";
 
@@ -203,8 +204,12 @@ export function exactEqual(a: unknown, b: unknown): boolean {
 }
 
 function parseInteger(value: Scalar): number | null {
-  if (typeof value === "number" && Number.isInteger(value)) return value;
-  if (typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value)) return Number(value);
+  // Number.isInteger accepts lossy values above 2^53-1, which can alias epochs.
+  if (typeof value === "number") return Number.isSafeInteger(value) ? value : null;
+  if (typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value)) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
   return null;
 }
 
@@ -524,18 +529,54 @@ export class ExecutorCore {
       steps[0].id !== "AUTHORITY_PUBLICATION" ||
       locatorKey(steps[0].target) !== locatorKey(authority) ||
       authority.range !== "Authority_Publication!A2:H2" ||
+      // Witness-only binding must not be redirected to a different tab in
+      // the fixture workbook by a caller-supplied locator.
+      authority.sheetId !== MATERIALIZED_FIXTURE_LOCATORS.authorityPublication.sheetId ||
       authority.startRowIndex !== 1 ||
       authority.startColumnIndex !== 0 ||
       authority.columns.join("|") !== fullColumns.join("|")
     ) {
       return { ok: false, stop: "ATOMIC_GENERATION_NOT_SEALED" };
     }
-    const sourceKeys = new Set(Object.values(input.root.locators).slice(1).map(locatorKey));
-    const seen = new Set<string>();
+    // Never infer protected sources from object insertion order: an input
+    // assembled in a different property order previously omitted one source.
+    const protectedSources = [
+      input.root.locators.candidateActivation,
+      input.root.locators.protection,
+      input.root.locators.usedEpochs,
+      input.root.locators.sessionCapability,
+    ];
+    const sourceKeys = new Set(protectedSources.map(locatorKey));
+    const occupied = new Set<string>();
+    const protectedCells = new Set<string>();
+    const cells = (locator: SheetsLocator): string[] => {
+      if (
+        !Number.isSafeInteger(locator.sheetId) ||
+        !Number.isSafeInteger(locator.startRowIndex) ||
+        !Number.isSafeInteger(locator.startColumnIndex) ||
+        locator.startRowIndex < 0 ||
+        locator.startColumnIndex < 0 ||
+        locator.columns.length < 1
+      ) return [];
+      return locator.columns.map((_, offset) =>
+        `${locator.sheetId}:${locator.startRowIndex}:${locator.startColumnIndex + offset}`
+      );
+    };
+    for (const locator of protectedSources) {
+      const covered = cells(locator);
+      if (covered.length !== locator.columns.length) {
+        return { ok: false, stop: "ATOMIC_GENERATION_NOT_SEALED", detail: "invalid protected locator" };
+      }
+      covered.forEach((cell) => protectedCells.add(cell));
+    }
     for (const step of steps) {
       const key = locatorKey(step.target);
+      const covered = cells(step.target);
       if (
         seen.has(key) ||
+        covered.length !== step.target.columns.length ||
+        covered.some((cell) => occupied.has(cell)) ||
+        (step !== steps[0] && covered.some((cell) => protectedCells.has(cell))) ||
         !targetAllowed(input.root, step.target) ||
         locatorDenied(step.target) ||
         step.target.spreadsheetId !== authority.spreadsheetId ||
@@ -549,11 +590,12 @@ export class ExecutorCore {
         return { ok: false, stop: "ATOMIC_GENERATION_NOT_SEALED", detail: step.id };
       }
       seen.add(key);
+      covered.forEach((cell) => occupied.add(cell));
     }
     const intended = steps[0].desiredAfter;
     if (
-      !Number.isInteger(input.expectedPredecessorEpoch) ||
-      !Number.isInteger(input.targetEpoch) ||
+      !Number.isSafeInteger(input.expectedPredecessorEpoch) ||
+      !Number.isSafeInteger(input.targetEpoch) ||
       input.targetEpoch <= input.expectedPredecessorEpoch ||
       asString(steps[0].expectedBefore.Current_Committed_Cutover_ID) !== input.expectedPredecessorCutoverId ||
       parseInteger(steps[0].expectedBefore.Current_Activation_Epoch) !== input.expectedPredecessorEpoch ||
