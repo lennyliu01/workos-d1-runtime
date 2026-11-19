@@ -20,9 +20,31 @@ interface D1PreparedStatement {
   run(): Promise<D1RunResult>;
 }
 
+interface ActiveManifestScopeRequest {
+  task_id: string;
+  dataset_id: string;
+  instance_id: string;
+  caller_identity: string;
+  operation: "READ" | "WRITE";
+  resource_binding: "DB";
+}
+
+// Supplied only by a trusted, registered ACTIVE Manifest/Gate adapter.
+// This candidate handler does not select a Manifest, issue grants or infer authority.
+interface ActiveManifestScopeDecision extends ActiveManifestScopeRequest {
+  authority_selection: "SINGLETON_CURRENT";
+  selected_manifest_id: string;
+  manifest_state: "ACTIVE";
+  business_authority_state: "ACTIVE";
+  permitted: true;
+}
+
 interface CandidateEnv {
   DB: { prepare(query: string): D1PreparedStatement };
   RUNTIME_SECRET?: string;
+  authorizeActiveManifestScope?: (
+    request: ActiveManifestScopeRequest,
+  ) => Promise<ActiveManifestScopeDecision | null>;
 }
 
 interface DatasetControl {
@@ -91,7 +113,9 @@ interface CurrentRow {
 
 const SAFE_TOKEN = /^[A-Za-z0-9._:-]+$/;
 const FX_SINGLETON = new Set(["SINGLETON"]);
-const RW_INSTANCES = new Set(["ENPLAS", "SERVICENOW", "FIGMA"]);
+// These are recognizable candidate identities, NOT publication or write authority.
+const RW_BATCH07_CANDIDATES = new Set(["DSG", "DOL", "WSP", "GIBA", "NA", "ENB", "ATD"]);
+const RW_INSTANCES = new Set(["ENPLAS", "SERVICENOW", "FIGMA", ...RW_BATCH07_CANDIDATES]);
 
 const WORKOS_DATASETS: Record<string, DatasetControl> = {
   FX_POLICY_ANALYSIS_STATE: {
@@ -264,7 +288,7 @@ function validWrite(body: unknown): body is WriteRequest {
     Object.prototype.hasOwnProperty.call(r, "payload");
 }
 
-function resolveControl(body: ReadRequest | WriteRequest): DatasetControl | Response {
+async function resolveControl(body: ReadRequest | WriteRequest, env: CandidateEnv): Promise<DatasetControl | Response> {
   const control = WORKOS_DATASETS[body.dataset_id];
   if (!control) return fail("DATASET_NOT_REGISTERED", 403);
   if (control.taskId !== body.task_id || !control.instances.has(body.instance_id)) return fail("CONTROL_DENIED", 403);
@@ -272,6 +296,42 @@ function resolveControl(body: ReadRequest | WriteRequest): DatasetControl | Resp
     if (!control.readers.has(body.caller_identity)) return fail("READ_NOT_AUTHORIZED", 403);
   } else if (!control.writers.has(body.caller_identity)) {
     return fail("WRITE_NOT_AUTHORIZED", 403);
+  }
+
+  // The static candidate list must never authorize a new production Instance.
+  // Fail closed until the existing Gate's selected ACTIVE Manifest resolution is wired.
+  if (RW_BATCH07_CANDIDATES.has(body.instance_id)) {
+    if (!env.authorizeActiveManifestScope) return fail("ACTIVE_MANIFEST_GATE_REQUIRED", 403);
+    const scope: ActiveManifestScopeRequest = {
+      task_id: body.task_id,
+      dataset_id: body.dataset_id,
+      instance_id: body.instance_id,
+      caller_identity: body.caller_identity,
+      operation: body.operation,
+      resource_binding: control.resourceBinding,
+    };
+    let decision: ActiveManifestScopeDecision | null;
+    try {
+      decision = await env.authorizeActiveManifestScope(scope);
+    } catch {
+      return fail("ACTIVE_MANIFEST_GATE_UNAVAILABLE", 503);
+    }
+    if (
+      decision?.permitted !== true ||
+      decision.authority_selection !== "SINGLETON_CURRENT" ||
+      decision.manifest_state !== "ACTIVE" ||
+      decision.business_authority_state !== "ACTIVE" ||
+      typeof decision.selected_manifest_id !== "string" ||
+      decision.selected_manifest_id.length === 0 ||
+      decision.task_id !== scope.task_id ||
+      decision.dataset_id !== scope.dataset_id ||
+      decision.instance_id !== scope.instance_id ||
+      decision.caller_identity !== scope.caller_identity ||
+      decision.operation !== scope.operation ||
+      decision.resource_binding !== "DB"
+    ) {
+      return fail("ACTIVE_MANIFEST_SCOPE_DENIED", 403);
+    }
   }
   return control;
 }
@@ -367,7 +427,7 @@ function currentSuccess(body: WriteRequest, control: DatasetControl, row: Curren
 }
 
 async function handleRead(body: ReadRequest, env: CandidateEnv): Promise<Response> {
-  const resolved = resolveControl(body);
+  const resolved = await resolveControl(body, env);
   if (resolved instanceof Response) return resolved;
   const b = base(body, resolved);
 
@@ -565,7 +625,7 @@ async function handleCurrentWrite(body: WriteRequest, control: DatasetControl, e
 }
 
 async function handleWrite(body: WriteRequest, env: CandidateEnv): Promise<Response> {
-  const resolved = resolveControl(body);
+  const resolved = await resolveControl(body, env);
   if (resolved instanceof Response) return resolved;
   const payloadJson = serializePayload(body.payload);
   if (payloadJson === null) return fail("INVALID_PAYLOAD", 400);
