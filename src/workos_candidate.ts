@@ -1,3 +1,5 @@
+import { authorizeDynamicD1Request, type DynamicPersistenceRequest, type TrustedDynamicInstanceContext } from "./workos_d1_bootstrap_guard.js";
+
 type ExecutionSurface = "CHAT" | "WORK";
 type TriggerMode = "HUMAN" | "SCHEDULE";
 type TaskId = "US_JAPAN_FX_POLICY" | "ROLLING_WEDGE_INVESTMENT";
@@ -23,6 +25,9 @@ interface D1PreparedStatement {
 interface CandidateEnv {
   DB: { prepare(query: string): D1PreparedStatement };
   RUNTIME_SECRET?: string;
+  // The existing deployment has no dynamic resolver. A trusted future server adapter
+  // must fresh-resolve the current active authority, Manifest and Gate.
+  resolveDynamicD1Context?: (request: DynamicPersistenceRequest) => Promise<TrustedDynamicInstanceContext>;
 }
 
 interface DatasetControl {
@@ -63,6 +68,7 @@ interface WriteRequest {
   payload: unknown;
   record_key?: string;
   expected_version?: number;
+  bootstrap_mode?: "INITIAL_BASELINE";
 }
 
 interface AppendRow {
@@ -91,6 +97,8 @@ interface CurrentRow {
 
 const SAFE_TOKEN = /^[A-Za-z0-9._:-]+$/;
 const FX_SINGLETON = new Set(["SINGLETON"]);
+// Existing production-company behavior is unchanged. New instances must match
+// the current exact active Manifest/Gate binding, never a wildcard allowlist.
 const RW_INSTANCES = new Set(["ENPLAS", "SERVICENOW", "FIGMA"]);
 
 const WORKOS_DATASETS: Record<string, DatasetControl> = {
@@ -252,7 +260,7 @@ function validWrite(body: unknown): body is WriteRequest {
   const r = body as Record<string, unknown>;
   return onlyKeys(r, [
     "execution_surface", "trigger_mode", "task_id", "caller_identity", "operation",
-    "dataset_id", "instance_id", "idempotency_key", "payload", "record_key", "expected_version",
+    "dataset_id", "instance_id", "idempotency_key", "payload", "record_key", "expected_version", "bootstrap_mode",
   ]) &&
     optionalExecutionMetadata(r) &&
     r.operation === "WRITE" &&
@@ -261,19 +269,38 @@ function validWrite(body: unknown): body is WriteRequest {
     typeof r.dataset_id === "string" &&
     typeof r.instance_id === "string" &&
     safeToken(r.idempotency_key, 128) &&
+    (r.bootstrap_mode === undefined || r.bootstrap_mode === "INITIAL_BASELINE") &&
     Object.prototype.hasOwnProperty.call(r, "payload");
 }
 
-function resolveControl(body: ReadRequest | WriteRequest): DatasetControl | Response {
+async function resolveControl(body: ReadRequest | WriteRequest, env: CandidateEnv): Promise<DatasetControl | Response> {
   const control = WORKOS_DATASETS[body.dataset_id];
   if (!control) return fail("DATASET_NOT_REGISTERED", 403);
-  if (control.taskId !== body.task_id || !control.instances.has(body.instance_id)) return fail("CONTROL_DENIED", 403);
+  if (control.taskId !== body.task_id) return fail("CONTROL_DENIED", 403);
   if (body.operation === "READ") {
     if (!control.readers.has(body.caller_identity)) return fail("READ_NOT_AUTHORIZED", 403);
   } else if (!control.writers.has(body.caller_identity)) {
     return fail("WRITE_NOT_AUTHORIZED", 403);
   }
-  return control;
+  if (control.instances.has(body.instance_id)) {
+    // No new bootstrap operation is introduced for existing instances.
+    if ("bootstrap_mode" in body && body.bootstrap_mode !== undefined) {
+      return fail("BOOTSTRAP_SCOPE_DENIED", 403);
+    }
+    return control;
+  }
+  // Only an exact RW dynamic binding may extend the legacy three-instance set.
+  // Client-provided authority assertions, fuzzy IDs and wildcard grants are denied.
+  if (body.task_id !== "ROLLING_WEDGE_INVESTMENT" || !env.resolveDynamicD1Context) {
+    return fail("DYNAMIC_INSTANCE_AUTHORITY_UNAVAILABLE", 403);
+  }
+  try {
+    const context = await env.resolveDynamicD1Context(body);
+    await authorizeDynamicD1Request(body, context);
+    return control;
+  } catch {
+    return fail("DYNAMIC_INSTANCE_GATE_DENIED", 403);
+  }
 }
 
 function canonicalizePayload(value: unknown): unknown {
@@ -367,7 +394,7 @@ function currentSuccess(body: WriteRequest, control: DatasetControl, row: Curren
 }
 
 async function handleRead(body: ReadRequest, env: CandidateEnv): Promise<Response> {
-  const resolved = resolveControl(body);
+  const resolved = await resolveControl(body, env);
   if (resolved instanceof Response) return resolved;
   const b = base(body, resolved);
 
@@ -565,7 +592,7 @@ async function handleCurrentWrite(body: WriteRequest, control: DatasetControl, e
 }
 
 async function handleWrite(body: WriteRequest, env: CandidateEnv): Promise<Response> {
-  const resolved = resolveControl(body);
+  const resolved = await resolveControl(body, env);
   if (resolved instanceof Response) return resolved;
   const payloadJson = serializePayload(body.payload);
   if (payloadJson === null) return fail("INVALID_PAYLOAD", 400);
