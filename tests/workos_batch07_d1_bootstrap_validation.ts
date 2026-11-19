@@ -260,4 +260,34 @@ await check("DRAFT read only current workflow and exact active manifest", async 
   assert.equal((await invoke(q,mock,async()=>ctx)).status,403);
   assert.equal(mock.sqlWrites,0);
 });
+// Cross-check PR #1715's exact-instance negative matrix without installing a
+// second resolver: every Batch07 instance is rejected absent trusted current
+// ACTIVE Manifest/Gate context, across all five existing RW Dataset families.
+await check("seven-by-five missing trusted ACTIVE Manifest context denied", async () => {
+  const datasets = [
+    "RW_CURRENT_STATE", "RW_EVIDENCE_HISTORY", "RW_REVISION_HISTORY",
+    "RW_VALUATION_HISTORY", "RW_RUN_LOG",
+  ];
+  for (const [instance] of companies) {
+    for (const dataset of datasets) {
+      const mock = dbFixture();
+      const request: any = { ...read(instance), dataset_id: dataset };
+      if (dataset !== "RW_CURRENT_STATE") request.selector = {kind:"TAIL", limit:1};
+      const rejected = await invoke(request, mock);
+      assert.equal(rejected.status, 403, instance + ":" + dataset);
+      assert.equal(mock.sqlWrites, 0);
+    }
+  }
+});
+await check("all seven missing exact instance in ACTIVE Manifest denied", async () => {
+  for (const [instance, listedTicker] of companies) {
+    const mock = dbFixture();
+    const ctx = context(instance, listedTicker);
+    ctx.gate.accesses = [];
+    const rejected = await invoke(write(instance, listedTicker), mock, async () => ctx);
+    assert.equal(rejected.status, 403, instance);
+    assert.equal(mock.sqlWrites, 0);
+  }
+});
+
 console.log("MOCK_ONLY_CASES_PASS", cases, "PRODUCTION_EXECUTION_NOT_AUTHORIZED");
