@@ -334,6 +334,74 @@ async function run(): Promise<void> {
     assert.equal(http.requests.length, 1);
     cases++;
   }
+  {
+    // Regression: a differently ordered RootLocators object must not make the
+    // first source disappear from protection (prior Object.values().slice(1)).
+    const { http, core, fence } = setup();
+    const input = makeInput();
+    input.root = {
+      ...root,
+      locators: { candidateActivation: candidate, protection, usedEpochs: epochs,
+        sessionCapability: session, authorityPublication: authority },
+      mutationAllowlist: [...root.mutationAllowlist, candidate],
+    };
+    input.transitionPlan = [...input.transitionPlan, {
+      id: "ILLEGAL_CANDIDATE_SOURCE_MUTATION", target: candidate,
+      expectedBefore: frozen, desiredAfter: { ...frozen, Cutover_ID: "CUT_MUTATED_SOURCE" },
+    }];
+    const denied = await core.executeNonproductionAtomicPublication("reordered-source-keys", input, fence);
+    assert.equal(denied.ok, false);
+    if (!denied.ok) assert.equal(denied.stop, "ATOMIC_GENERATION_NOT_SEALED");
+    assert.equal(http.requests.length, 0);
+    cases++;
+  }
+  {
+    // A caller must not bypass source protection using a different logical
+    // locator pointing to the same physical sheet cells.
+    const { http, core, fence } = setup();
+    const alias = { ...candidate, logicalIdentity: "CANDIDATE_SOURCE_ALIAS" };
+    const input = makeInput();
+    input.root = { ...root, mutationAllowlist: [...root.mutationAllowlist, alias] };
+    input.transitionPlan = [...input.transitionPlan, {
+      id: "ILLEGAL_SOURCE_ALIAS", target: alias,
+      expectedBefore: frozen, desiredAfter: { ...frozen, Cutover_ID: "CUT_ALIASED" },
+    }];
+    const denied = await core.executeNonproductionAtomicPublication("source-alias", input, fence);
+    assert.equal(denied.ok, false);
+    if (!denied.ok) assert.equal(denied.stop, "ATOMIC_GENERATION_NOT_SEALED");
+    assert.equal(http.requests.length, 0);
+    cases++;
+  }
+  {
+    // Epoch integers beyond IEEE-754 exact precision must never be published.
+    const { http, core, fence } = setup();
+    const input = makeInput();
+    input.targetEpoch = Number.MAX_SAFE_INTEGER + 1;
+    input.transitionPlan = [{ ...input.transitionPlan[0],
+      desiredAfter: { ...successor, Current_Activation_Epoch: input.targetEpoch },
+    }, input.transitionPlan[1]];
+    const denied = await core.executeNonproductionAtomicPublication("lossy-epoch", input, fence);
+    assert.equal(denied.ok, false);
+    if (!denied.ok) assert.equal(denied.stop, "ACTIVATION_OBJECT_DRIFT");
+    assert.equal(http.requests.length, 0);
+    cases++;
+  }
+  {
+    // A fixture workbook ID alone must not authorize a new tab target.
+    const { http, core, fence } = setup();
+    const differentTab = { ...authority, sheetId: authority.sheetId + 500 };
+    const input = makeInput();
+    input.root = { ...root,
+      locators: { ...root.locators, authorityPublication: differentTab },
+      mutationAllowlist: [differentTab, member],
+    };
+    input.transitionPlan = [{ ...input.transitionPlan[0], target: differentTab }, input.transitionPlan[1]];
+    const denied = await core.executeNonproductionAtomicPublication("wrong-fixture-tab", input, fence);
+    assert.equal(denied.ok, false);
+    if (!denied.ok) assert.equal(denied.stop, "ATOMIC_GENERATION_NOT_SEALED");
+    assert.equal(http.requests.length, 0);
+    cases++;
+  }
   console.log(JSON.stringify({
     status: "PASS_NONPRODUCTION_MOCK_RUNTIME_ONLY",
     cases,
