@@ -547,6 +547,7 @@ export class ExecutorCore {
       input.root.locators.sessionCapability,
     ];
     const sourceKeys = new Set(protectedSources.map(locatorKey));
+    const seen = new Set<string>();
     const occupied = new Set<string>();
     const protectedCells = new Set<string>();
     const cells = (locator: SheetsLocator): string[] => {
