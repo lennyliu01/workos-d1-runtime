@@ -55,6 +55,8 @@ export interface LoadedControlPlane {
   runtimeProfileText: string;
   roleTexts: Readonly<Record<string, string>>;
   companiesBaselineText?: string;
+  /** Exact baseline carrier selected by the current Registry snapshot. */
+  registryCompaniesBaselineFileId?: string;
   projectionDrift?: { agentsManifestFileId: string; authoritativeManifestFileId: string };
 }
 
@@ -327,9 +329,15 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
   for (const [role, fileId] of Object.entries(task.roleFileIds)) {
     roleTexts[role] = await reader.readDriveText(fileId);
   }
-  const companiesBaselineText = task.companiesBaselineFileId
-    ? await reader.readDriveText(task.companiesBaselineFileId)
-    : undefined;
+  // The task's AGENTS locator is a projection, not a competing company authority.
+  // Reject any mismatch with the ACTIVE Registry-selected exact baseline carrier.
+  if (taskId === "ROLLING_WEDGE_INVESTMENT" &&
+      (!task.companiesBaselineFileId || !liveGate.companiesBaselineFileId ||
+       task.companiesBaselineFileId !== liveGate.companiesBaselineFileId ||
+       !liveGate.companiesBaselineText)) {
+    throw new Error("COMPANIES_BASELINE_AUTHORITY_LOCATOR_DRIFT");
+  }
+  const companiesBaselineText = liveGate.companiesBaselineText;
 
   const authorityPublication: AuthorityPublicationProjection = {
     authorityScopeFingerprint: authorityRow.Authority_Scope_Fingerprint,
@@ -388,6 +396,7 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
     runtimeProfileText,
     roleTexts,
     ...(companiesBaselineText ? { companiesBaselineText } : {}),
+    ...(liveGate.companiesBaselineFileId ? { registryCompaniesBaselineFileId:liveGate.companiesBaselineFileId } : {}),
     ...(projectionDrift ? { projectionDrift } : {}),
   };
 }
