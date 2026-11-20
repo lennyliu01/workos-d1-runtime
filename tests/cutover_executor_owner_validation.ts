@@ -333,6 +333,18 @@ async function extraGuards(): Promise<void> {
     "unbound legacy production executor must fail closed");
   assert([...prodProvider.mutationCount.values()].every(count => count === 0),
     "legacy production mode cannot mutate without an owner-bound R4 Grant");
+  const unboundCore = new ExecutorCore(prodProvider);
+  const unboundVerifier = { async verify() { return true; } };
+  const unboundPrepared = await unboundCore.acknowledgeRelayPrepared(
+    "PRODUCTION", "SESSION_001", root, unboundVerifier);
+  const unboundClose = await unboundCore.closeSessionAfterRelay(
+    "PRODUCTION", "SESSION_001", root, unboundVerifier);
+  assert(!unboundPrepared.ok && unboundPrepared.stop === "PUBLISHER_GRANT_NOT_CONFIGURED",
+    "unbound production relay acknowledgement must reject");
+  assert(!unboundClose.ok && unboundClose.stop === "PUBLISHER_GRANT_NOT_CONFIGURED",
+    "unbound production session close must reject");
+  assert.equal(prodProvider.mutationCount.size, 0,
+    "no alternate production call may mutate under an unbound principal");
 
   let capturedUrl = "";
   let capturedMethod = "";
