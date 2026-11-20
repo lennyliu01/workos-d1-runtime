@@ -9,6 +9,7 @@ import type {
   TrustedDynamicInstanceContext,
 } from "./workos_d1_bootstrap_guard.js";
 import type { GitHubInvokerIdentity } from "./workos_github_oidc_invoker.js";
+import { publishedInitialBaselineGrantIsEligible } from "./workos_initial_baseline_grant_projection.js";
 
 /**
  * R3 candidate: bind only to the singleton-selected ACTIVE Registry/Manifest/Gate.
@@ -148,7 +149,18 @@ export function createTrustedDynamicD1Resolver(
               scope.datasetId !== "RW_CURRENT_STATE" ||
               scope.callerIdentity !== "Rolling_Wedge_Workflow" ||
               scope.idempotencyKey !== request.idempotency_key) return false;
-          // Only the independent authenticated one-use issuer may approve.
+          // Grant State is read only from the current ACTIVE Manifest's
+          // Publisher-selected projection, NEVER from HTTP JSON or a cached
+          // snapshot. Exact payload SHA256 blocks substitution under the same
+          // granted idempotency key.
+          const issued = await publishedInitialBaselineGrantIsEligible(reader, cp, {
+            ...scope,
+            activationEpoch: cp.authority.activationEpoch,
+            manifestFingerprint: cp.manifestFingerprint,
+          });
+          if(!issued)return false;
+          // Issued eligibility != consumed: the independent issuer/consumer
+          // and D1 expected_version=0 CAS still must both succeed.
           return issuer.consumeExact({
             ...scope,
             activationEpoch: cp.authority.activationEpoch,
