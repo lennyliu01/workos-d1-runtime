@@ -8,6 +8,7 @@ import type {
   DynamicPersistenceRequest,
   TrustedDynamicInstanceContext,
 } from "./workos_d1_bootstrap_guard.js";
+import type { GitHubInvokerIdentity } from "./workos_github_oidc_invoker.js";
 
 /**
  * R3 candidate: bind only to the singleton-selected ACTIVE Registry/Manifest/Gate.
@@ -26,6 +27,9 @@ export interface OnceOnlyInitialBaselineIssuer {
     cutoverId: string;
     registrySnapshotId: string;
     manifestFingerprint: string;
+    // Cloudflare Worker binds this via verified GitHub OIDC; nonproduction
+    // unit tests may omit it but any real issuer MUST reject missing proof.
+    verifiedInvoker?: GitHubInvokerIdentity;
   }): Promise<boolean>;
 }
 
