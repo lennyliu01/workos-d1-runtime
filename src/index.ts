@@ -1,5 +1,6 @@
 import { handleWorkOsCandidatePersistence } from "./workos_candidate";
 import { GoogleExactControlPlaneReader } from "./workos_control_plane_loader";
+import { verifyGitHubWorkOsInvoker } from "./workos_github_oidc_invoker";
 import {
   createTrustedDynamicD1Resolver,
   type OnceOnlyInitialBaselineIssuer,
@@ -43,6 +44,8 @@ interface Env {
   // This is an owner-authenticated and durable one-use grant interface,
   // never a JSON/HTTP value and never a Google OAuth permission.
   WORKOS_INITIAL_BASELINE_ISSUER?: OnceOnlyInitialBaselineIssuer;
+  // A distinct, issuer-defined GitHub OIDC audience; not RUNTIME_SECRET.
+  WORKOS_GITHUB_OIDC_AUDIENCE?: string;
 }
 
 interface TimeRoundtripRequest {
@@ -710,10 +713,32 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/candidate/workos-persistence") {
       const readerToken = env.WORKOS_CONTROL_PLANE_ACCESS_TOKEN;
+      // The production grant issuer cannot be invoked by RUNTIME_SECRET alone.
+      // GitHub Actions issue events do not carry the signed OIDC workload
+      // identity used here. OIDC/JWKS failure denies the DRAFT bootstrap.
+      const grant = env.WORKOS_INITIAL_BASELINE_ISSUER;
+      const audience = env.WORKOS_GITHUB_OIDC_AUDIENCE;
+      const verifiedIssuer: OnceOnlyInitialBaselineIssuer | undefined =
+        grant && audience ? {
+          consumeExact: async (scope) => {
+            const invoker = await verifyGitHubWorkOsInvoker(
+              request.headers.get("X-WorkOS-Invoker-OIDC"),
+              {
+                audience,
+                repositoryId: "1380735463",
+                repository: "lennyliu01/workos-d1-runtime",
+                workflowRef: "lennyliu01/workos-d1-runtime/.github/workflows/workos-business-executor.yml@refs/heads/main",
+                ref: "refs/heads/main",
+                eventName: "workflow_dispatch",
+              },
+            );
+            return grant.consumeExact({ ...scope, verifiedInvoker: invoker });
+          },
+        } : undefined;
       const resolver = readerToken
         ? createTrustedDynamicD1Resolver(
             new GoogleExactControlPlaneReader(readerToken),
-            env.WORKOS_INITIAL_BASELINE_ISSUER,
+            verifiedIssuer,
           )
         : undefined;
       return handleWorkOsCandidatePersistence(request, {
