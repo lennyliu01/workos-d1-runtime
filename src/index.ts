@@ -3,7 +3,7 @@ import { GoogleExactControlPlaneReader } from "./workos_control_plane_loader";
 import { getVerifiedWorkOsReader } from "./workos_authenticated_runtime_reader";
 import {
   createTrustedDynamicD1Resolver,
-  type OnceOnlyInitialBaselineIssuer,
+  type InitialBaselineGrantVerifier,
 } from "./workos_dynamic_d1_runtime_binding";
 
 type ExecutionSurface = "CHAT" | "WORK";
@@ -42,7 +42,7 @@ interface Env {
   // only from the exact GitHub OIDC-verified workflow through protected headers.
   // This is an owner-authenticated and durable one-use grant interface,
   // never a JSON/HTTP value and never a Google OAuth permission.
-  WORKOS_INITIAL_BASELINE_ISSUER?: OnceOnlyInitialBaselineIssuer;
+  WORKOS_INITIAL_BASELINE_GRANT_VERIFIER?: InitialBaselineGrantVerifier;
   // A distinct, issuer-defined GitHub OIDC audience; not RUNTIME_SECRET.
   WORKOS_GITHUB_OIDC_AUDIENCE?: string;
 }
@@ -717,11 +717,11 @@ export default {
       // enter any new company's dynamic D1 Gate.
       const trusted = await getVerifiedWorkOsReader(
         request.headers, env.WORKOS_GITHUB_OIDC_AUDIENCE);
-      const grant = env.WORKOS_INITIAL_BASELINE_ISSUER;
-      const verifiedIssuer: OnceOnlyInitialBaselineIssuer | undefined =
+      const grant = env.WORKOS_INITIAL_BASELINE_GRANT_VERIFIER;
+      const verifiedIssuer: InitialBaselineGrantVerifier | undefined =
         trusted && grant ? {
-          consumeExact: async (scope) =>
-            grant.consumeExact({ ...scope, verifiedInvoker: trusted.invoker }),
+          verifyExact: async (scope) =>
+            grant.verifyExact({ ...scope, verifiedInvoker: trusted.invoker }),
         } : undefined;
       const resolver = trusted
         ? createTrustedDynamicD1Resolver(
