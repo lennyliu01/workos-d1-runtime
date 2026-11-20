@@ -67,6 +67,8 @@ jobs:
         run: npx tsx tests/workos_batch07_d1_bootstrap_validation.ts
       - name: Batch07 trusted runtime binding and issuer seam (mock only)
         run: npx tsx tests/workos_batch07_trusted_runtime_binding_validation.ts
+      - name: Batch07 signed OIDC invocation identity verification (isolated cryptography)
+        run: npx tsx tests/workos_initial_baseline_oidc_identity_validation.ts
       - run: npx tsx tests/workos_openai_live_witness_validation.ts
 
   execute:
