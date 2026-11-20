@@ -2,6 +2,7 @@ import {
   loadControlPlane,
   type ExactControlPlaneReader,
   type LoadedControlPlane,
+  type SupportedTaskId,
 } from "./workos_control_plane_loader.js";
 import type {
   DynamicPersistenceRequest,
@@ -116,6 +117,9 @@ function exactLoadedPlane(cp: LoadedControlPlane, request: DynamicPersistenceReq
 export function createTrustedDynamicD1Resolver(
   reader: ExactControlPlaneReader,
   issuer?: OnceOnlyInitialBaselineIssuer,
+  // Candidate unit seam; Worker always uses default authoritative loader.
+  load: (reader: ExactControlPlaneReader, taskId: SupportedTaskId) => Promise<LoadedControlPlane> =
+    loadControlPlane,
 ): (request: DynamicPersistenceRequest) => Promise<TrustedDynamicInstanceContext> {
   return async (request) => {
     if (request.task_id !== "ROLLING_WEDGE_INVESTMENT" ||
@@ -125,7 +129,7 @@ export function createTrustedDynamicD1Resolver(
     }
     // Fresh per request, never cached or passed from HTTP. loadControlPlane
     // enforces singleton, target Cutover, Manifest, physical Gate, and fences.
-    const cp = await loadControlPlane(reader, "ROLLING_WEDGE_INVESTMENT");
+    const cp = await load(reader, "ROLLING_WEDGE_INVESTMENT");
     const registry = exactLoadedPlane(cp, request);
     return {
       gate: cp.gate,
