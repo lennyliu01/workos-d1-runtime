@@ -38,6 +38,9 @@ const grantHeader=[
   "Instance_ID","Logical_Member","Writer_ID","Reader_ID","Allowed_Fields",
   "Idempotency_Key","Grant_State","Payload_SHA256",
 ];
+let grantState="ISSUED";
+let grantDuplicate=false;
+let grantAllowedFieldsOverride:string|undefined;
 const reader: ExactControlPlaneReader = {
   async readDriveText() { throw new Error("UNAUTHORIZED_FAKE_LOADER"); },
   async readSheet(spreadsheetId,sheetName,range) {
@@ -50,9 +53,15 @@ const reader: ExactControlPlaneReader = {
       "ROLLING_WEDGE_INVESTMENT","MAN-BATCH07","MF-TEST","11",
       "RW_CURRENT_STATE","DSG","D1_BOUND_DATASET:RW_CURRENT_STATE;Binding=DB",
       "Rolling_Wedge_Workflow","Rolling_Wedge_Workflow",
+      grantAllowedFieldsOverride??[...fields].sort().join(","),"DSG-GRANT-ONE",grantState,
+      Array.from(hash,x=>x.toString(16).padStart(2,"0")).join(""),
+    ]].concat(grantDuplicate ? [[
+      "ROLLING_WEDGE_INVESTMENT","MAN-BATCH07","MF-TEST","11",
+      "RW_CURRENT_STATE","DSG","D1_BOUND_DATASET:RW_CURRENT_STATE;Binding=DB",
+      "Rolling_Wedge_Workflow","Rolling_Wedge_Workflow",
       [...fields].sort().join(","),"DSG-GRANT-ONE","ISSUED",
       Array.from(hash,x=>x.toString(16).padStart(2,"0")).join(""),
-    ]];
+    ]] : []);
   },
 };
 const request = {
@@ -207,6 +216,44 @@ await check("unknown company, other task, and duplicate company denied",async()=
     baseline+"\n## DSG\n- Company_ID: \`DSG\`\n","DSG"),/NOT_UNIQUE/);
   await assert.rejects(()=>resolver(loaded(),true)({
     ...request,task_id:"US_JAPAN_FX_POLICY"}),/TASK_SCOPE_DENIED/);
+});
+await check("revoked source grant denied even if mocked issuer is prepared",async()=>{
+  grantState="REVOKED";
+  try{
+    const context=await resolver(loaded(),true)(request);
+    await assert.rejects(()=>authorizeDynamicD1Request(request,context),
+      /BOOTSTRAP_GRANT_DENIED/);
+  }finally{grantState="ISSUED"}
+});
+await check("duplicate issued grant projection is not a unique issuer",async()=>{
+  grantDuplicate=true;
+  try{
+    const context=await resolver(loaded(),true)(request);
+    await assert.rejects(()=>authorizeDynamicD1Request(request,context),
+      /BOOTSTRAP_GRANT_DENIED/);
+  }finally{grantDuplicate=false}
+});
+await check("unregistered Manifest bootstrap tab denies issuance",async()=>{
+  const cp=loaded();delete cp.manifestMetadata.Bootstrap_Grant_Projection_Tab;
+  const context=await resolver(cp,true)(request);
+  await assert.rejects(()=>authorizeDynamicD1Request(request,context),
+    /BOOTSTRAP_GRANT_DENIED/);
+});
+await check("modified frozen source fails payload SHA binding",async()=>{
+  const modified={...request,payload:{
+    ...request.payload,Structured_State_Content:{unaccepted_source:false},
+  }};
+  const context=await resolver(loaded(),true)(modified);
+  await assert.rejects(()=>authorizeDynamicD1Request(modified,context),
+    /BOOTSTRAP_GRANT_DENIED/);
+});
+await check("incorrect eight-field issued grant scope denied",async()=>{
+  grantAllowedFieldsOverride="Company_ID,Company_Name";
+  try{
+    const context=await resolver(loaded(),true)(request);
+    await assert.rejects(()=>authorizeDynamicD1Request(request,context),
+      /BOOTSTRAP_GRANT_DENIED/);
+  }finally{grantAllowedFieldsOverride=undefined}
 });
 await check("real default loader cannot be replaced by caller values",async()=>{
   await assert.rejects(()=>createTrustedDynamicD1Resolver(reader)(request),
