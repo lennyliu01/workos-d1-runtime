@@ -733,6 +733,7 @@ export class ExecutorCore {
     root: TargetRoot,
     verifier: RelayFinalityVerifier,
   ): Promise<ExecutorResult> {
+    if (mode === "PRODUCTION") return { ok: false, stop: "PUBLISHER_GRANT_NOT_CONFIGURED" };
     if (mode === "WITNESS") {
       const boundary = witnessBoundaryStop(root);
       if (boundary) return boundary;
@@ -770,6 +771,7 @@ export class ExecutorCore {
     root: TargetRoot,
     verifier: RelayFinalityVerifier,
   ): Promise<ExecutorResult> {
+    if (mode === "PRODUCTION") return { ok: false, stop: "PUBLISHER_GRANT_NOT_CONFIGURED" };
     if (mode === "WITNESS") {
       const boundary = witnessBoundaryStop(root);
       if (boundary) return boundary;
