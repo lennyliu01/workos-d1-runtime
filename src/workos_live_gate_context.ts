@@ -27,6 +27,9 @@ export interface LiveGateContext {
   archivedIdentityKeys: ReadonlySet<string>;
   physicalContractFingerprints: ReadonlyMap<string,string>;
   businessAuthorityStates: ReadonlyMap<string,string>;
+  /** From the singleton-selected ACTIVE Registry Resource_Projection, not AGENTS. */
+  companiesBaselineFileId?: string;
+  companiesBaselineText?: string;
   sourceEvidence: Readonly<Record<string,string>>;
 }
 
@@ -199,8 +202,10 @@ export async function loadLiveGateContext(reader:ExactControlPlaneReader,input:L
 
   const business=new Map<string,string>();
   let baselineText:string|undefined;
+  let baselineFileId:string|undefined;
   if(input.accesses.some(a=>a.dynamicInstance)){
     const b=resource(rs,"RW_COMPANY_REGISTRY","Companies_Baseline.md");
+    baselineFileId=b.Exact_File_ID;
     baselineText=await reader.readDriveText(b.Exact_File_ID);
     if(!baselineText.includes("sole authority for `Monitor_Enabled`, `State_Status`, and `Archived`"))
       throw new Error("LIVE_GATE_CONTEXT_STALE:RW_COMPANY_REGISTRY_AUTHORITY");
@@ -217,6 +222,8 @@ export async function loadLiveGateContext(reader:ExactControlPlaneReader,input:L
     archivedIdentityKeys:archived,
     physicalContractFingerprints:physical,
     businessAuthorityStates:business,
+    ...(baselineFileId ? { companiesBaselineFileId:baselineFileId } : {}),
+    ...(baselineText ? { companiesBaselineText:baselineText } : {}),
     sourceEvidence:{
       registry:`${input.currentRegistryFileId}:${input.currentRegistrySnapshotId}:${input.currentRegistryFingerprint}`,
       physical:`${input.currentRegistryFileId}:Contract_Fingerprints:${input.currentAcceptanceBindingId}`,
