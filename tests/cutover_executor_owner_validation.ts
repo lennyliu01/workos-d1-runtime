@@ -331,7 +331,7 @@ async function extraGuards(): Promise<void> {
   const prodResult = await new ExecutorCore(prodProvider).execute({ ...makeInput(), mode: "PRODUCTION" });
   assert(!prodResult.ok && prodResult.stop === "PUBLISHER_GRANT_NOT_CONFIGURED",
     "unbound legacy production executor must fail closed");
-  assert.equal(prodProvider.mutations.length, 0,
+  assert([...prodProvider.mutationCount.values()].every(count => count === 0),
     "legacy production mode cannot mutate without an owner-bound R4 Grant");
 
   let capturedUrl = "";
