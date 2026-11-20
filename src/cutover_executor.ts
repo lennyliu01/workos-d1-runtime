@@ -308,6 +308,13 @@ export class ExecutorCore {
   constructor(private readonly provider: ControlPlaneProvider) {}
 
   async execute(input: ExecutorInput): Promise<ExecutorResult> {
+    // R4: the legacy step-by-step executor is NOT an authorized production
+    // Publisher. It has no one-use FAA2 grant verification, durable exclusive
+    // provider fence or old-request finality. Never let a caller switch modes
+    // to bypass the bound atomic publication entry.
+    if (input.mode === "PRODUCTION") {
+      return { ok: false, stop: "PUBLISHER_GRANT_NOT_CONFIGURED" };
+    }
     if (input.mode === "WITNESS") {
       const boundary = witnessBoundaryStop(input.root);
       if (boundary) return boundary;
@@ -726,6 +733,7 @@ export class ExecutorCore {
     root: TargetRoot,
     verifier: RelayFinalityVerifier,
   ): Promise<ExecutorResult> {
+    if (mode === "PRODUCTION") return { ok: false, stop: "PUBLISHER_GRANT_NOT_CONFIGURED" };
     if (mode === "WITNESS") {
       const boundary = witnessBoundaryStop(root);
       if (boundary) return boundary;
@@ -763,6 +771,7 @@ export class ExecutorCore {
     root: TargetRoot,
     verifier: RelayFinalityVerifier,
   ): Promise<ExecutorResult> {
+    if (mode === "PRODUCTION") return { ok: false, stop: "PUBLISHER_GRANT_NOT_CONFIGURED" };
     if (mode === "WITNESS") {
       const boundary = witnessBoundaryStop(root);
       if (boundary) return boundary;

@@ -1,4 +1,6 @@
 import { authorizeDynamicD1Request, type DynamicPersistenceRequest, type TrustedDynamicInstanceContext } from "./workos_d1_bootstrap_guard.js";
+import { serializeWorkOsPayload, sha256PayloadHex } from "./workos_canonical_payload.js";
+import { atomicInitialBaselineInsert, type InitialGrantScope, type Statement } from "./workos_d1_initial_baseline_transaction.js";
 
 type ExecutionSurface = "CHAT" | "WORK";
 type TriggerMode = "HUMAN" | "SCHEDULE";
@@ -23,7 +25,10 @@ interface D1PreparedStatement {
 }
 
 interface CandidateEnv {
-  DB: { prepare(query: string): D1PreparedStatement };
+  DB: {
+    prepare(query: string): D1PreparedStatement;
+    batch?(queries: D1PreparedStatement[]): Promise<D1RunResult[]>;
+  };
   RUNTIME_SECRET?: string;
   // The existing deployment has no dynamic resolver. A trusted future server adapter
   // must fresh-resolve the current active authority, Manifest and Gate.
@@ -37,6 +42,8 @@ interface DatasetControl {
   writers: ReadonlySet<string>;
   readers: ReadonlySet<string>;
   resourceBinding: "DB";
+  // Present ONLY on trusted current-Manifest DRAFT initialization requests.
+  initialGrant?: InitialGrantScope;
 }
 
 type ReadSelector =
@@ -297,34 +304,21 @@ async function resolveControl(body: ReadRequest | WriteRequest, env: CandidateEn
   try {
     const context = await env.resolveDynamicD1Context(body);
     await authorizeDynamicD1Request(body, context);
+    if(body.operation==="WRITE" && body.bootstrap_mode==="INITIAL_BASELINE") {
+      const a=context.gate.authorityPublication;
+      if(!a?.authorityScopeFingerprint || !a.currentActivationEpoch ||
+         !context.gate.manifestId) return fail("INITIAL_GRANT_AUTHORITY_UNAVAILABLE",403);
+      return { ...control, initialGrant:{
+        authorityFingerprint:a.authorityScopeFingerprint,
+        activationEpoch:a.currentActivationEpoch,
+        manifestId:context.gate.manifestId,
+        datasetId:"RW_CURRENT_STATE" as const,instanceId:body.instance_id,
+        idempotencyKey:body.idempotency_key,
+      }};
+    }
     return control;
   } catch {
     return fail("DYNAMIC_INSTANCE_GATE_DENIED", 403);
-  }
-}
-
-function canonicalizePayload(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(canonicalizePayload);
-  }
-  if (value !== null && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    const canonical: Record<string, unknown> = {};
-    for (const key of Object.keys(record).sort()) {
-      canonical[key] = canonicalizePayload(record[key]);
-    }
-    return canonical;
-  }
-  return value;
-}
-
-function serializePayload(payload: unknown): string | null {
-  if (payload === undefined) return null;
-  try {
-    const result = JSON.stringify(canonicalizePayload(payload));
-    return result === undefined ? null : result;
-  } catch {
-    return null;
   }
 }
 
@@ -521,6 +515,29 @@ async function handleAppendWrite(body: WriteRequest, control: DatasetControl, en
   return appendSuccess(body, control, row, false);
 }
 
+async function exactInitialGrantConsumption(
+  control:DatasetControl, env:CandidateEnv,row:CurrentRow,payloadJson:string,
+):Promise<boolean>{
+  const scope=control.initialGrant;
+  if(!scope)return true;
+  const consumed=await env.DB.prepare(
+    "SELECT authority_scope_fingerprint,activation_epoch,manifest_id,dataset_id,instance_id,"+
+    "idempotency_key,payload_sha256,invocation_id FROM workos_initial_baseline_consumptions "+
+    "WHERE invocation_id=? LIMIT 1"
+  ).bind(row.invocation_id).first<{
+    authority_scope_fingerprint:string;activation_epoch:string;manifest_id:string;
+    dataset_id:string;instance_id:string;idempotency_key:string;
+    payload_sha256:string;invocation_id:string;
+  }>();
+  return !!consumed && consumed.authority_scope_fingerprint===scope.authorityFingerprint &&
+    consumed.activation_epoch===scope.activationEpoch &&
+    consumed.manifest_id===scope.manifestId &&
+    consumed.dataset_id===scope.datasetId && consumed.instance_id===scope.instanceId &&
+    consumed.idempotency_key===scope.idempotencyKey &&
+    consumed.invocation_id===row.invocation_id &&
+    consumed.payload_sha256===await sha256PayloadHex(payloadJson);
+}
+
 async function replayCurrent(body: WriteRequest, control: DatasetControl, env: CandidateEnv, payloadJson: string): Promise<Response | null> {
   const row = await currentByIdempotency(env, body.idempotency_key);
   if (!row) return null;
@@ -530,6 +547,10 @@ async function replayCurrent(body: WriteRequest, control: DatasetControl, env: C
       dataset_id: body.dataset_id, instance_id: body.instance_id, idempotency_key: body.idempotency_key,
     });
   }
+  // An idempotent v0 replay must prove the original one-shot consumption,
+  // not merely find an identically keyed state row.
+  if(!(await exactInitialGrantConsumption(control,env,row,payloadJson)))
+    return fail("INITIAL_GRANT_REPLAY_NOT_VERIFIED",500);
   return currentSuccess(body, control, row, true);
 }
 
@@ -555,7 +576,15 @@ async function handleCurrentWrite(body: WriteRequest, control: DatasetControl, e
   const invocationId = crypto.randomUUID();
   let result: D1RunResult;
   try {
-    if (body.expected_version === 0) {
+    if(body.bootstrap_mode==="INITIAL_BASELINE") {
+      if(body.expected_version!==0 || !control.initialGrant || !env.DB.batch)
+        return fail("INITIAL_GRANT_ATOMIC_RUNTIME_UNAVAILABLE",403);
+      await atomicInitialBaselineInsert({
+        prepare:(sql:string)=>env.DB.prepare(sql),
+        batch:(statements:Statement[])=>env.DB.batch!(statements as D1PreparedStatement[]),
+      }, control.initialGrant,payloadJson,await sha256PayloadHex(payloadJson),invocationId);
+      result={success:true,meta:{changes:1}};
+    } else if (body.expected_version === 0) {
       result = await env.DB.prepare("INSERT INTO workos_current_state_versions (dataset_id,instance_id,version,previous_version,payload_json,invocation_id,idempotency_key,db_written_at) SELECT ?,?,1,0,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE NOT EXISTS (SELECT 1 FROM workos_current_state_versions WHERE dataset_id=? AND instance_id=?)")
         .bind(body.dataset_id, body.instance_id, payloadJson, invocationId, body.idempotency_key, body.dataset_id, body.instance_id).run();
     } else {
@@ -563,6 +592,17 @@ async function handleCurrentWrite(body: WriteRequest, control: DatasetControl, e
         .bind(body.dataset_id, body.instance_id, payloadJson, invocationId, body.idempotency_key, body.dataset_id, body.instance_id, body.expected_version).run();
     }
   } catch {
+    if(control.initialGrant){
+      // A cross-network failure is an UNKNOWN outcome. Reconcile exact D1
+      // state + consumption before any future attempt; never blind retry.
+      try {
+        const replay=await replayCurrent(body,control,env,payloadJson);
+        if(replay)return replay;
+        const existing=await current(env,body.dataset_id,body.instance_id);
+        if(existing)return await staleCurrent(body,env);
+      } catch {/* fail closed */}
+      return fail("INITIAL_GRANT_OUTCOME_UNCERTAIN",503);
+    }
     try {
       const replay = await replayCurrent(body, control, env, payloadJson);
       if (replay) return replay;
@@ -588,13 +628,20 @@ async function handleCurrentWrite(body: WriteRequest, control: DatasetControl, e
       row.invocation_id !== invocationId) {
     return fail("READBACK_MISMATCH", 500);
   }
+  if(control.initialGrant){
+    // D1 state and consumption MUST read back with the exact same invocation.
+    try{
+      if(!(await exactInitialGrantConsumption(control,env,row,payloadJson)))
+        return fail("INITIAL_GRANT_READBACK_MISMATCH",500);
+    }catch{return fail("INITIAL_GRANT_READBACK_FAILED",500);}
+  }
   return currentSuccess(body, control, row, false);
 }
 
 async function handleWrite(body: WriteRequest, env: CandidateEnv): Promise<Response> {
   const resolved = await resolveControl(body, env);
   if (resolved instanceof Response) return resolved;
-  const payloadJson = serializePayload(body.payload);
+  const payloadJson = serializeWorkOsPayload(body.payload);
   if (payloadJson === null) return fail("INVALID_PAYLOAD", 400);
   return resolved.writeMode === "APPEND_ONLY"
     ? handleAppendWrite(body, resolved, env, payloadJson)

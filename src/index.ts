@@ -1,4 +1,10 @@
 import { handleWorkOsCandidatePersistence } from "./workos_candidate";
+import { GoogleExactControlPlaneReader } from "./workos_control_plane_loader";
+import { getVerifiedWorkOsReader } from "./workos_authenticated_runtime_reader";
+import {
+  createTrustedDynamicD1Resolver,
+  type InitialBaselineGrantVerifier,
+} from "./workos_dynamic_d1_runtime_binding";
 
 type ExecutionSurface = "CHAT" | "WORK";
 type TriggerMode = "HUMAN" | "SCHEDULE";
@@ -32,6 +38,13 @@ interface D1Database {
 interface Env {
   DB: D1Database;
   RUNTIME_SECRET?: string;
+  // No static Google access-token env var. A fresh GCP WIF token is accepted
+  // only from the exact GitHub OIDC-verified workflow through protected headers.
+  // This is an owner-authenticated and durable one-use grant interface,
+  // never a JSON/HTTP value and never a Google OAuth permission.
+  WORKOS_INITIAL_BASELINE_GRANT_VERIFIER?: InitialBaselineGrantVerifier;
+  // A distinct, issuer-defined GitHub OIDC audience; not RUNTIME_SECRET.
+  WORKOS_GITHUB_OIDC_AUDIENCE?: string;
 }
 
 interface TimeRoundtripRequest {
@@ -698,7 +711,29 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/candidate/workos-persistence") {
-      return handleWorkOsCandidatePersistence(request, env);
+      // Only the existing WorkOS GitHub WIF job can supply a fresh Google
+      // token, and its signed OIDC principal must verify before it is used.
+      // The public Issue adapter has no OIDC credential and stays unable to
+      // enter any new company's dynamic D1 Gate.
+      const trusted = await getVerifiedWorkOsReader(
+        request.headers, env.WORKOS_GITHUB_OIDC_AUDIENCE);
+      const grant = env.WORKOS_INITIAL_BASELINE_GRANT_VERIFIER;
+      const verifiedIssuer: InitialBaselineGrantVerifier | undefined =
+        trusted && grant ? {
+          verifyExact: async (scope) =>
+            grant.verifyExact({ ...scope, verifiedInvoker: trusted.invoker }),
+        } : undefined;
+      const resolver = trusted
+        ? createTrustedDynamicD1Resolver(
+            new GoogleExactControlPlaneReader(trusted.accessToken),
+            verifiedIssuer,
+          )
+        : undefined;
+      return handleWorkOsCandidatePersistence(request, {
+        DB: env.DB,
+        RUNTIME_SECRET: env.RUNTIME_SECRET,
+        ...(resolver ? { resolveDynamicD1Context: resolver } : {}),
+      });
     }
 
     return Response.json(

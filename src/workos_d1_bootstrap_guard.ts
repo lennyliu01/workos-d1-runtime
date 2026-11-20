@@ -1,3 +1,4 @@
+import { serializeWorkOsPayload } from "./workos_canonical_payload.js";
 import { authorizePersistence, type GateProjectionSnapshot } from "./workos_persistent_gate_projection.js";
 
 /**
@@ -118,9 +119,12 @@ export async function authorizeDynamicD1Request(
     entry.datasetId === request.dataset_id && entry.instanceId === request.instance_id);
   if (matches.length !== 1) return deny("INSTANCE_NOT_EXACTLY_REGISTERED");
   const entry = matches[0];
+  const draftBootstrap = registry.stateStatus === "DRAFT";
+  // A newly registered DRAFT company is not ACTIVE. Its only permitted
+  // persistence path is the separately granted v0 bootstrap/CURRENT readback.
   if (!entry.dynamicInstance ||
       entry.logicalMember !== "D1_BOUND_DATASET:" + request.dataset_id + ";Binding=DB" ||
-      entry.businessAuthorityState !== "ACTIVE") {
+      entry.businessAuthorityState !== (draftBootstrap ? "DRAFT" : "ACTIVE")) {
     return deny("PHYSICAL_OR_BUSINESS_AUTHORITY");
   }
 
@@ -167,6 +171,9 @@ export async function authorizeDynamicD1Request(
     instanceId: request.instance_id,
     logicalMember: entry.logicalMember,
     operation: request.operation,
+    ...(draftBootstrap ? { draftInitialAccess: request.operation === "WRITE"
+      ? "INITIAL_BASELINE_WRITE" as const
+      : "INITIAL_BASELINE_READBACK" as const } : {}),
     ...(request.operation === "WRITE" ? {
       writeOperation: operation,
       fields: plainRecord(request.payload) ? new Set(Object.keys(request.payload)) : new Set<string>(),
@@ -177,7 +184,9 @@ export async function authorizeDynamicD1Request(
     // A Gate ALLOW does not itself create an INITIAL_BASELINE grant. The
     // authenticated external issuer/consumption route is still an owner gate.
     if (!context.authorizeInitialBaseline) return deny("BOOTSTRAP_GRANT_UNAVAILABLE");
-    const payloadJson = JSON.stringify(request.payload);
+    // Bind Grant verification to the exact bytes persisted in D1.
+    const payloadJson = serializeWorkOsPayload(request.payload);
+    if(payloadJson===null) return deny("INITIAL_PAYLOAD_SERIALIZATION");
     const authorized = await context.authorizeInitialBaseline({
       manifestId: context.gate.manifestId,
       authorityFingerprint: context.gate.authorityPublication?.authorityScopeFingerprint ?? "",

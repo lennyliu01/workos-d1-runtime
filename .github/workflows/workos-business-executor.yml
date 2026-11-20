@@ -63,6 +63,16 @@ jobs:
           if-no-files-found: error
       - run: npm run typecheck
       - run: npm run test:workos-business-executor
+      - name: Batch07 DRAFT initial baseline Gate regression (nonproduction mock only)
+        run: npx tsx tests/workos_batch07_d1_bootstrap_validation.ts
+      - name: Batch07 trusted runtime binding and issuer seam (mock only)
+        run: npx tsx tests/workos_batch07_trusted_runtime_binding_validation.ts
+      - name: Batch07 signed OIDC invocation identity verification (isolated cryptography)
+        run: npx tsx tests/workos_initial_baseline_oidc_identity_validation.ts
+      - name: Batch07 short-lived Google WIF reader admission (isolated identity)
+        run: npx tsx tests/workos_authenticated_runtime_reader_validation.ts
+      - name: Batch07 real SQLite D1 transaction and grant-ledger rollback
+        run: npx tsx tests/workos_d1_initial_baseline_atomic_sqlite_validation.ts
       - run: npx tsx tests/workos_openai_live_witness_validation.ts
 
   execute:

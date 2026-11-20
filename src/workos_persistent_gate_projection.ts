@@ -79,6 +79,8 @@ export interface PersistenceAuthorizationRequest {
   writeOperation?: string;
   fields?: ReadonlySet<string>;
   logicalK1?: string | null;
+  /** Candidate-only narrow DRAFT bootstrap scope; never a grant or client field. */
+  draftInitialAccess?: "INITIAL_BASELINE_WRITE" | "INITIAL_BASELINE_READBACK";
 }
 
 function logicalKey(datasetId: string, logicalK1: string): string {
@@ -167,7 +169,29 @@ export function authorizePersistence(
   }
 
   const entry = findAccess(snapshot, request);
-  if (entry.dynamicInstance && entry.businessAuthorityState !== "ACTIVE") {
+  // An independently issued bootstrap Grant is still required by the D1 adapter.
+  // This Gate projection ONLY narrows the eligible DRAFT path; it cannot issue
+  // that grant or convert DRAFT business authority into ACTIVE.
+  const bootstrapScope = request.draftInitialAccess;
+  const draftScopeAllowed =
+    entry.dynamicInstance && entry.businessAuthorityState === "DRAFT" &&
+    snapshot.taskId === "ROLLING_WEDGE_INVESTMENT" &&
+    request.taskId === "ROLLING_WEDGE_INVESTMENT" &&
+    request.datasetId === "RW_CURRENT_STATE" &&
+    request.callerIdentity === "Rolling_Wedge_Workflow" &&
+    (bootstrapScope === "INITIAL_BASELINE_WRITE"
+      ? request.operation === "WRITE" &&
+        request.writeOperation === "CONDITIONAL_CURRENT_STATE" &&
+        request.fields !== undefined &&
+        request.fields.size === 8 &&
+        ["Company_ID","Company_Name","Ticker","Exchange","Currency",
+          "State_As_Of","Base_Source_Materials","Structured_State_Content"]
+          .every(field => request.fields!.has(field))
+      : bootstrapScope === "INITIAL_BASELINE_READBACK" && request.operation === "READ");
+  if (bootstrapScope !== undefined && !draftScopeAllowed) {
+    throw new Error("DRAFT_BOOTSTRAP_SCOPE_DENIED");
+  }
+  if (entry.dynamicInstance && entry.businessAuthorityState !== "ACTIVE" && !draftScopeAllowed) {
     throw new Error(`BUSINESS_AUTHORITY_NOT_READY:${entry.businessAuthorityState}`);
   }
 
