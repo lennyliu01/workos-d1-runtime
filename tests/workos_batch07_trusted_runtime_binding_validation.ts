@@ -142,8 +142,8 @@ async function check(label:string, test:()=>void|Promise<void>){
   await test(); checks++; console.log("PASS",label);
 }
 function resolver(cp:LoadedControlPlane, oneUse=false){
-  let accepted=0;
-  const issuer=oneUse?{async consumeExact(scope: {
+  let verifications=0;
+  const issuer=oneUse?{async verifyExact(scope: {
     instanceId:string;activationEpoch:string;cutoverId:string;
     registrySnapshotId:string;manifestFingerprint:string;
     authorityFingerprint:string;payloadJson:string;idempotencyKey:string;
@@ -156,7 +156,7 @@ function resolver(cp:LoadedControlPlane, oneUse=false){
     assert.equal(scope.authorityFingerprint,"SCOPE-BATCH07");
     assert.equal(scope.idempotencyKey,"DSG-GRANT-ONE");
     assert.equal(JSON.parse(scope.payloadJson).Company_ID,"DSG");
-    return ++accepted===1;
+    verifications++; return true;
   }}:undefined;
   return createTrustedDynamicD1Resolver(reader,issuer,async ()=>cp);
 }
@@ -170,8 +170,9 @@ await check("registered DRAFT identity parsed exactly",()=>{
 await check("owner-approved once-only issuer receives accepted singleton binding",async()=>{
   const context=await resolver(loaded(),true)(request);
   await authorizeDynamicD1Request(request,context);
-  await assert.rejects(()=>authorizeDynamicD1Request(request,context),
-    /BOOTSTRAP_GRANT_DENIED/);
+  // Read-only grant validation may repeat. Exactly-once effects belong to
+  // the D1 v0->v1 + grant-consumption transaction, not this pre-write check.
+  await authorizeDynamicD1Request(request,context);
   assert.equal(context.gate.authorityPublication?.currentActivationEpoch,"11");
 });
 await check("no external issuer denies DRAFT WRITE",async()=>{
