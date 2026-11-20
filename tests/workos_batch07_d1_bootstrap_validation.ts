@@ -99,15 +99,21 @@ function read(instanceId: string) {
   };
 }
 
-function dbFixture() {
+function dbFixture(options:{failLedger?:boolean}={}) {
   let rows: any[] = [];
+  let ledger: any[] = [];
   let sqlWrites = 0;
   const DB = {
     prepare(sql: string) {
       return {
         bind(...args: any[]) {
           return {
+            sql,args,
             async first() {
+              if(sql.includes("FROM workos_initial_baseline_consumptions")) {
+                const row=ledger.find(x=>x.invocation_id===args[0]);
+                return row?{...row}:null;
+              }
               const row = sql.includes("WHERE idempotency_key=?") ? rows.find(x => x.idempotency_key === args[0]) :
                 sql.includes("WHERE invocation_id=?") ? rows.find(x => x.invocation_id === args[0]) :
                 rows.filter(x => x.dataset_id === args[0] && x.instance_id === args[1])
@@ -134,10 +140,40 @@ function dbFixture() {
         },
       };
     },
+    async batch(statements:any[]) {
+      if(statements.length!==2 ||
+         !statements[0].sql.startsWith("INSERT INTO workos_current_state_versions") ||
+         !statements[1].sql.startsWith("INSERT INTO workos_initial_baseline_consumptions")) {
+        throw new Error("UNEXPECTED_MOCK_TRANSACTION");
+      }
+      sqlWrites++;
+      const [dataset_id,instance_id,payload_json,invocation_id,idempotency_key]=statements[0].args;
+      const [authority_scope_fingerprint,activation_epoch,manifest_id,ldataset,linstance,
+        lidempotency,payload_sha256,lookupDataset,lookupInstance,lookupInvocation,
+        lookupIdempotency,lookupPayload]=statements[1].args;
+      // Isolated model of the real SQLite single-batch transaction: validate
+      // BOTH operations and unique scopes BEFORE committing either one.
+      if(options.failLedger || rows.some(r=>r.dataset_id===dataset_id&&r.instance_id===instance_id) ||
+         ledger.some(l=>l.authority_scope_fingerprint===authority_scope_fingerprint&&
+           l.activation_epoch===activation_epoch&&l.manifest_id===manifest_id&&
+           l.dataset_id===dataset_id&&l.instance_id===instance_id) ||
+         dataset_id!=="RW_CURRENT_STATE" || ldataset!==dataset_id ||
+         linstance!==instance_id || lidempotency!==idempotency_key ||
+         lookupDataset!==dataset_id || lookupInstance!==instance_id ||
+         lookupInvocation!==invocation_id || lookupIdempotency!==idempotency_key ||
+         lookupPayload!==payload_json)
+        throw new Error("MOCK_D1_TRANSACTION_ROLLED_BACK");
+      rows.push({dataset_id,instance_id,version:1,previous_version:0,
+        payload_json,invocation_id,idempotency_key,db_written_at:"MOCK_WRITE"});
+      ledger.push({authority_scope_fingerprint,activation_epoch,manifest_id,
+        dataset_id,instance_id,idempotency_key,payload_sha256,
+        invocation_id,db_consumed_at:"MOCK_CONSUME"});
+      return [{success:true,meta:{changes:1}},{success:true,meta:{changes:1}}];
+    },
   };
-  return { DB, get rows() { return rows; }, get sqlWrites() { return sqlWrites; } };
+  return { DB, get rows() {return rows;},get ledger(){return ledger;},
+    get sqlWrites() { return sqlWrites; } };
 }
-
 async function invoke(body: unknown, mock: ReturnType<typeof dbFixture>,
   resolver?: (arg: any) => Promise<TrustedDynamicInstanceContext>) {
   const request = new Request("https://test.invalid/candidate/workos-persistence", {
@@ -229,6 +265,14 @@ for (const [name, modify] of denied) {
   });
 }
 
+await check("ledger insertion failure cannot leave version one without consumption",async()=>{
+  const mock=dbFixture({failLedger:true});
+  const result=await invoke(write("DSG","DSG"),mock,async()=>context("DSG","DSG"));
+  assert.notEqual(result.status,200);
+  assert.equal(mock.rows.length,0);
+  assert.equal(mock.ledger.length,0);
+  assert.equal(mock.sqlWrites,1);
+});
 await check("missing resolver no D1 write", async () => {
   const mock=dbFixture();
   const result=await invoke(write(id,ticker),mock);
