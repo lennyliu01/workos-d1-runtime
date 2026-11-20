@@ -343,7 +343,7 @@ async function extraGuards(): Promise<void> {
     "unbound production relay acknowledgement must reject");
   assert(!unboundClose.ok && unboundClose.stop === "PUBLISHER_GRANT_NOT_CONFIGURED",
     "unbound production session close must reject");
-  assert.equal(prodProvider.mutationCount.size, 0,
+  assert(prodProvider.mutationCount.size === 0,
     "no alternate production call may mutate under an unbound principal");
 
   let capturedUrl = "";
