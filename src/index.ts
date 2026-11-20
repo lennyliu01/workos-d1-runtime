@@ -1,6 +1,6 @@
 import { handleWorkOsCandidatePersistence } from "./workos_candidate";
 import { GoogleExactControlPlaneReader } from "./workos_control_plane_loader";
-import { verifyGitHubWorkOsInvoker } from "./workos_github_oidc_invoker";
+import { getVerifiedWorkOsReader } from "./workos_authenticated_runtime_reader";
 import {
   createTrustedDynamicD1Resolver,
   type OnceOnlyInitialBaselineIssuer,
@@ -38,9 +38,8 @@ interface D1Database {
 interface Env {
   DB: D1Database;
   RUNTIME_SECRET?: string;
-  // Only an authenticated credential broker may supply a fresh server-side
-  // bearer. No token, or an expired token, leaves the new instance path CLOSED.
-  WORKOS_CONTROL_PLANE_ACCESS_TOKEN?: string;
+  // No static Google access-token env var. A fresh GCP WIF token is accepted
+  // only from the exact GitHub OIDC-verified workflow through protected headers.
   // This is an owner-authenticated and durable one-use grant interface,
   // never a JSON/HTTP value and never a Google OAuth permission.
   WORKOS_INITIAL_BASELINE_ISSUER?: OnceOnlyInitialBaselineIssuer;
@@ -712,32 +711,21 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/candidate/workos-persistence") {
-      const readerToken = env.WORKOS_CONTROL_PLANE_ACCESS_TOKEN;
-      // The production grant issuer cannot be invoked by RUNTIME_SECRET alone.
-      // GitHub Actions issue events do not carry the signed OIDC workload
-      // identity used here. OIDC/JWKS failure denies the DRAFT bootstrap.
+      // Only the existing WorkOS GitHub WIF job can supply a fresh Google
+      // token, and its signed OIDC principal must verify before it is used.
+      // The public Issue adapter has no OIDC credential and stays unable to
+      // enter any new company's dynamic D1 Gate.
+      const trusted = await getVerifiedWorkOsReader(
+        request.headers, env.WORKOS_GITHUB_OIDC_AUDIENCE);
       const grant = env.WORKOS_INITIAL_BASELINE_ISSUER;
-      const audience = env.WORKOS_GITHUB_OIDC_AUDIENCE;
       const verifiedIssuer: OnceOnlyInitialBaselineIssuer | undefined =
-        grant && audience ? {
-          consumeExact: async (scope) => {
-            const invoker = await verifyGitHubWorkOsInvoker(
-              request.headers.get("X-WorkOS-Invoker-OIDC"),
-              {
-                audience,
-                repositoryId: "1380735463",
-                repository: "lennyliu01/workos-d1-runtime",
-                workflowRef: "lennyliu01/workos-d1-runtime/.github/workflows/workos-business-executor.yml@refs/heads/main",
-                ref: "refs/heads/main",
-                eventName: "workflow_dispatch",
-              },
-            );
-            return grant.consumeExact({ ...scope, verifiedInvoker: invoker });
-          },
+        trusted && grant ? {
+          consumeExact: async (scope) =>
+            grant.consumeExact({ ...scope, verifiedInvoker: trusted.invoker }),
         } : undefined;
-      const resolver = readerToken
+      const resolver = trusted
         ? createTrustedDynamicD1Resolver(
-            new GoogleExactControlPlaneReader(readerToken),
+            new GoogleExactControlPlaneReader(trusted.accessToken),
             verifiedIssuer,
           )
         : undefined;
