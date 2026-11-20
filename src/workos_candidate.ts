@@ -515,6 +515,29 @@ async function handleAppendWrite(body: WriteRequest, control: DatasetControl, en
   return appendSuccess(body, control, row, false);
 }
 
+async function exactInitialGrantConsumption(
+  control:DatasetControl, env:CandidateEnv,row:CurrentRow,payloadJson:string,
+):Promise<boolean>{
+  const scope=control.initialGrant;
+  if(!scope)return true;
+  const consumed=await env.DB.prepare(
+    "SELECT authority_scope_fingerprint,activation_epoch,manifest_id,dataset_id,instance_id,"+
+    "idempotency_key,payload_sha256,invocation_id FROM workos_initial_baseline_consumptions "+
+    "WHERE invocation_id=? LIMIT 1"
+  ).bind(row.invocation_id).first<{
+    authority_scope_fingerprint:string;activation_epoch:string;manifest_id:string;
+    dataset_id:string;instance_id:string;idempotency_key:string;
+    payload_sha256:string;invocation_id:string;
+  }>();
+  return !!consumed && consumed.authority_scope_fingerprint===scope.authorityFingerprint &&
+    consumed.activation_epoch===scope.activationEpoch &&
+    consumed.manifest_id===scope.manifestId &&
+    consumed.dataset_id===scope.datasetId && consumed.instance_id===scope.instanceId &&
+    consumed.idempotency_key===scope.idempotencyKey &&
+    consumed.invocation_id===row.invocation_id &&
+    consumed.payload_sha256===await sha256PayloadHex(payloadJson);
+}
+
 async function replayCurrent(body: WriteRequest, control: DatasetControl, env: CandidateEnv, payloadJson: string): Promise<Response | null> {
   const row = await currentByIdempotency(env, body.idempotency_key);
   if (!row) return null;
@@ -524,6 +547,10 @@ async function replayCurrent(body: WriteRequest, control: DatasetControl, env: C
       dataset_id: body.dataset_id, instance_id: body.instance_id, idempotency_key: body.idempotency_key,
     });
   }
+  // An idempotent v0 replay must prove the original one-shot consumption,
+  // not merely find an identically keyed state row.
+  if(!(await exactInitialGrantConsumption(control,env,row,payloadJson)))
+    return fail("INITIAL_GRANT_REPLAY_NOT_VERIFIED",500);
   return currentSuccess(body, control, row, true);
 }
 
@@ -565,6 +592,17 @@ async function handleCurrentWrite(body: WriteRequest, control: DatasetControl, e
         .bind(body.dataset_id, body.instance_id, payloadJson, invocationId, body.idempotency_key, body.dataset_id, body.instance_id, body.expected_version).run();
     }
   } catch {
+    if(control.initialGrant){
+      // A cross-network failure is an UNKNOWN outcome. Reconcile exact D1
+      // state + consumption before any future attempt; never blind retry.
+      try {
+        const replay=await replayCurrent(body,control,env,payloadJson);
+        if(replay)return replay;
+        const existing=await current(env,body.dataset_id,body.instance_id);
+        if(existing)return await staleCurrent(body,env);
+      } catch {/* fail closed */}
+      return fail("INITIAL_GRANT_OUTCOME_UNCERTAIN",503);
+    }
     try {
       const replay = await replayCurrent(body, control, env, payloadJson);
       if (replay) return replay;
@@ -591,29 +629,11 @@ async function handleCurrentWrite(body: WriteRequest, control: DatasetControl, e
     return fail("READBACK_MISMATCH", 500);
   }
   if(control.initialGrant){
-    // State alone is insufficient: prove the SAME D1 transaction persisted
-    // exact one-shot consumption, not a speculative in-memory grant flag.
-    const scope=control.initialGrant;
-    let consumed: {
-      authority_scope_fingerprint:string;activation_epoch:string;manifest_id:string;
-      dataset_id:string;instance_id:string;idempotency_key:string;
-      payload_sha256:string;invocation_id:string;
-    } | null;
+    // D1 state and consumption MUST read back with the exact same invocation.
     try{
-      consumed=await env.DB.prepare(
-        "SELECT authority_scope_fingerprint,activation_epoch,manifest_id,dataset_id,instance_id,"+
-        "idempotency_key,payload_sha256,invocation_id FROM workos_initial_baseline_consumptions "+
-        "WHERE invocation_id=? LIMIT 1"
-      ).bind(invocationId).first();
+      if(!(await exactInitialGrantConsumption(control,env,row,payloadJson)))
+        return fail("INITIAL_GRANT_READBACK_MISMATCH",500);
     }catch{return fail("INITIAL_GRANT_READBACK_FAILED",500);}
-    if(!consumed || consumed.authority_scope_fingerprint!==scope.authorityFingerprint ||
-       consumed.activation_epoch!==scope.activationEpoch ||
-       consumed.manifest_id!==scope.manifestId ||
-       consumed.dataset_id!==scope.datasetId || consumed.instance_id!==scope.instanceId ||
-       consumed.idempotency_key!==scope.idempotencyKey ||
-       consumed.invocation_id!==invocationId ||
-       consumed.payload_sha256!==await sha256PayloadHex(payloadJson))
-      return fail("INITIAL_GRANT_READBACK_MISMATCH",500);
   }
   return currentSuccess(body, control, row, false);
 }
