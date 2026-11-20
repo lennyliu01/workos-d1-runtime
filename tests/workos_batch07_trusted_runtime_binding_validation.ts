@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { serializeWorkOsPayload } from "../src/workos_canonical_payload.js";
 import { createTrustedDynamicD1Resolver, readExactCompanyIdentity } from "../src/workos_dynamic_d1_runtime_binding.js";
 import { authorizeDynamicD1Request } from "../src/workos_d1_bootstrap_guard.js";
 import {
@@ -48,7 +49,7 @@ const reader: ExactControlPlaneReader = {
        sheetName!=="Initial_Baseline_Grants" || range!=="A1:M250")
       throw new Error("UNAUTHORIZED_FAKE_LOADER");
     const hash=new Uint8Array(await crypto.subtle.digest("SHA-256",
-      new TextEncoder().encode(JSON.stringify(request.payload))));
+      new TextEncoder().encode(serializeWorkOsPayload(request.payload)!)));
     return [grantHeader,[
       "ROLLING_WEDGE_INVESTMENT","MAN-BATCH07","MF-TEST","11",
       "RW_CURRENT_STATE","DSG","D1_BOUND_DATASET:RW_CURRENT_STATE;Binding=DB",
