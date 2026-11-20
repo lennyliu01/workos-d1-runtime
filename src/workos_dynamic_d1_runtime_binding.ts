@@ -21,9 +21,9 @@ type InitialScope = Parameters<
   NonNullable<TrustedDynamicInstanceContext["authorizeInitialBaseline"]>
 >[0];
 
-export interface OnceOnlyInitialBaselineIssuer {
-  /** An authenticated external owner-issued grant: exactly one durable consume. */
-  consumeExact(scope: InitialScope & {
+export interface InitialBaselineGrantVerifier {
+  /** Read-only independent validation. Publisher ISSUES; D1 transaction CONSUMES. */
+  verifyExact(scope: InitialScope & {
     activationEpoch: string;
     cutoverId: string;
     registrySnapshotId: string;
@@ -121,7 +121,7 @@ function exactLoadedPlane(cp: LoadedControlPlane, request: DynamicPersistenceReq
 
 export function createTrustedDynamicD1Resolver(
   reader: ExactControlPlaneReader,
-  issuer?: OnceOnlyInitialBaselineIssuer,
+  issuer?: InitialBaselineGrantVerifier,
   // Candidate unit seam; Worker always uses default authoritative loader.
   load: (reader: ExactControlPlaneReader, taskId: SupportedTaskId) => Promise<LoadedControlPlane> =
     loadControlPlane,
@@ -159,9 +159,9 @@ export function createTrustedDynamicD1Resolver(
             manifestFingerprint: cp.manifestFingerprint,
           });
           if(!issued)return false;
-          // Issued eligibility != consumed: the independent issuer/consumer
-          // and D1 expected_version=0 CAS still must both succeed.
-          return issuer.consumeExact({
+          // Issued eligibility != consumed. This check MUST be side-effect-free;
+          // the D1 atomic state + consumption ledger is the only consumer.
+          return issuer.verifyExact({
             ...scope,
             activationEpoch: cp.authority.activationEpoch,
             cutoverId: cp.authority.currentCutoverId,
