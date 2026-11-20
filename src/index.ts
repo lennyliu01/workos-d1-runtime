@@ -1,4 +1,9 @@
 import { handleWorkOsCandidatePersistence } from "./workos_candidate";
+import { GoogleExactControlPlaneReader } from "./workos_control_plane_loader";
+import {
+  createTrustedDynamicD1Resolver,
+  type OnceOnlyInitialBaselineIssuer,
+} from "./workos_dynamic_d1_runtime_binding";
 
 type ExecutionSurface = "CHAT" | "WORK";
 type TriggerMode = "HUMAN" | "SCHEDULE";
@@ -32,6 +37,12 @@ interface D1Database {
 interface Env {
   DB: D1Database;
   RUNTIME_SECRET?: string;
+  // Only an authenticated credential broker may supply a fresh server-side
+  // bearer. No token, or an expired token, leaves the new instance path CLOSED.
+  WORKOS_CONTROL_PLANE_ACCESS_TOKEN?: string;
+  // This is an owner-authenticated and durable one-use grant interface,
+  // never a JSON/HTTP value and never a Google OAuth permission.
+  WORKOS_INITIAL_BASELINE_ISSUER?: OnceOnlyInitialBaselineIssuer;
 }
 
 interface TimeRoundtripRequest {
@@ -698,7 +709,18 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/candidate/workos-persistence") {
-      return handleWorkOsCandidatePersistence(request, env);
+      const readerToken = env.WORKOS_CONTROL_PLANE_ACCESS_TOKEN;
+      const resolver = readerToken
+        ? createTrustedDynamicD1Resolver(
+            new GoogleExactControlPlaneReader(readerToken),
+            env.WORKOS_INITIAL_BASELINE_ISSUER,
+          )
+        : undefined;
+      return handleWorkOsCandidatePersistence(request, {
+        DB: env.DB,
+        RUNTIME_SECRET: env.RUNTIME_SECRET,
+        ...(resolver ? { resolveDynamicD1Context: resolver } : {}),
+      });
     }
 
     return Response.json(
