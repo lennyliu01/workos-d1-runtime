@@ -1,3 +1,4 @@
+import { serializeWorkOsPayload } from "./workos_canonical_payload.js";
 import { authorizePersistence, type GateProjectionSnapshot } from "./workos_persistent_gate_projection.js";
 
 /**
@@ -183,7 +184,9 @@ export async function authorizeDynamicD1Request(
     // A Gate ALLOW does not itself create an INITIAL_BASELINE grant. The
     // authenticated external issuer/consumption route is still an owner gate.
     if (!context.authorizeInitialBaseline) return deny("BOOTSTRAP_GRANT_UNAVAILABLE");
-    const payloadJson = JSON.stringify(request.payload);
+    // Bind Grant verification to the exact bytes persisted in D1.
+    const payloadJson = serializeWorkOsPayload(request.payload);
+    if(payloadJson===null) return deny("INITIAL_PAYLOAD_SERIALIZATION");
     const authorized = await context.authorizeInitialBaseline({
       manifestId: context.gate.manifestId,
       authorityFingerprint: context.gate.authorityPublication?.authorityScopeFingerprint ?? "",
