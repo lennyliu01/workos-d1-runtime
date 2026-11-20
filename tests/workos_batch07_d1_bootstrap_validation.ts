@@ -50,7 +50,7 @@ function gate(instanceId: string): GateProjectionSnapshot {
         ]),
       }],
       writeMode: "CURRENT_STATE", dynamicInstance: true,
-      businessAuthorityState: "ACTIVE",
+      businessAuthorityState: "DRAFT",
     }],
   };
 }
@@ -207,7 +207,8 @@ const denied: Array<[string, (req: any, ctx: TrustedDynamicInstanceContext) => v
   ["currency-not-null", (r) => { r.payload.Currency = "CAD"; }],
   ["archive-registry", (_, c) => { c.registry.archived = true; }],
   ["draft-monitor-enabled", (_, c) => { c.registry.monitorEnabled = true; }],
-  ["gate-business-draft", (_, c) => { c.gate.accesses = c.gate.accesses.map(a => ({...a,businessAuthorityState:"DRAFT"})); }],
+  ["gate-business-active-in-draft", (_, c) => { c.gate.accesses = c.gate.accesses.map(a => ({...a,businessAuthorityState:"ACTIVE"})); }],
+  ["gate-business-disabled", (_, c) => { c.gate.accesses = c.gate.accesses.map(a => ({...a,businessAuthorityState:"DISABLED"})); }],
   ["manifest-not-active", (_, c) => { c.gate.manifestState = "CANDIDATE"; }],
   ["gate-epoch-drift", (_, c) => { c.gate.expectedActivationEpoch = "different"; }],
   ["gate-fingerprint-drift", (_, c) => { c.gate.gateConfigFingerprint = "bad"; }],
