@@ -33,9 +33,27 @@ This file is the sole authority for \`Monitor_Enabled\`, \`State_Status\`, and \
 - Archived: \`FALSE\`
 - State_Status: \`ACTIVE\`
 `;
+const grantHeader=[
+  "Task_ID","Manifest_ID","Manifest_Fingerprint","Authority_Epoch","Dataset_ID",
+  "Instance_ID","Logical_Member","Writer_ID","Reader_ID","Allowed_Fields",
+  "Idempotency_Key","Grant_State","Payload_SHA256",
+];
 const reader: ExactControlPlaneReader = {
   async readDriveText() { throw new Error("UNAUTHORIZED_FAKE_LOADER"); },
-  async readSheet() { throw new Error("UNAUTHORIZED_FAKE_LOADER"); },
+  async readSheet(spreadsheetId,sheetName,range) {
+    if(spreadsheetId!=="MAN-BATCH07-FILE" ||
+       sheetName!=="Initial_Baseline_Grants" || range!=="A1:M250")
+      throw new Error("UNAUTHORIZED_FAKE_LOADER");
+    const hash=new Uint8Array(await crypto.subtle.digest("SHA-256",
+      new TextEncoder().encode(JSON.stringify(request.payload))));
+    return [grantHeader,[
+      "ROLLING_WEDGE_INVESTMENT","MAN-BATCH07","MF-TEST","11",
+      "RW_CURRENT_STATE","DSG","D1_BOUND_DATASET:RW_CURRENT_STATE;Binding=DB",
+      "Rolling_Wedge_Workflow","Rolling_Wedge_Workflow",
+      [...fields].sort().join(","),"DSG-GRANT-ONE","ISSUED",
+      Array.from(hash,x=>x.toString(16).padStart(2,"0")).join(""),
+    ]];
+  },
 };
 const request = {
   task_id:"ROLLING_WEDGE_INVESTMENT",caller_identity:"Rolling_Wedge_Workflow",
@@ -105,7 +123,7 @@ function loaded():LoadedControlPlane{
       registryFileId:"REG-TEST",acceptanceBindingId:"AB-TEST",
     },
     manifestFileId:"MAN-BATCH07-FILE",manifestFingerprint:"MF-TEST",
-    manifestMetadata:{},gate:gate(),workflowText:"",runtimeProfileText:"",
+    manifestMetadata:{Bootstrap_Grant_Projection_Tab:"Initial_Baseline_Grants"},gate:gate(),workflowText:"",runtimeProfileText:"",
     roleTexts:{},companiesBaselineText:baseline,
     registryCompaniesBaselineFileId:BASE,
   };
