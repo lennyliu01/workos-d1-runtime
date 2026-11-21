@@ -38,7 +38,7 @@ const fiveChecks=[
 const run={
   id:Number(runId),repository_id:1380735463,actor_id:Number(actorId),
   triggering_actor_id:Number(actorId),event:"workflow_dispatch",
-  head_sha:headSha,path:workflow+"@main",run_attempt:1,
+  head_sha:headSha,path:workflow,run_attempt:1,
   created_at:eventTime,status:"in_progress" as const,
 };
 const digestInput=serializeWorkOsPayload({
@@ -84,7 +84,7 @@ const mockFetch=(async (url:RequestInfo|URL)=>{
 }) as typeof fetch;
 function make(jwt:string,overrides:any={}){
   return new CandidateGitHubNativeOwnerEventVerifier(
-    jwt,{oidc,expectedHeadSha:headSha,expectedRunPath:workflow+"@main"},
+    jwt,{oidc,expectedHeadSha:headSha,expectedRunPath:workflow},
     {async readExactWorkflowRun(){return overrides.run??run}},
     {async readVerifiedAnchoredDispatch(){return overrides.anchor??anchor}},
     mockFetch,now
@@ -105,6 +105,8 @@ await denied("run attempt replay",jwt,{run:{...run,run_attempt:2}});
 await denied("wrong repository",jwt,{run:{...run,repository_id:12}});
 await denied("wrong SHA",jwt,{run:{...run,head_sha:"b".repeat(40)}});
 await denied("wrong workflow",jwt,{run:{...run,path:"other@main"}});
+await denied("old mock @branch workflow path",jwt,{run:{...run,path:workflow+"@main"}});
+await denied("wrong signed workflow ref",await sign({workflow_ref:workflowRef.replace("main","other")}));
 await denied("unanchored subject",jwt,{anchor:{...anchor,exactSubjectSha256:"a".repeat(64)}});
 await denied("revoked",jwt,{anchor:{...anchor,revoked:true}});
 await denied("altered five checks",jwt,{anchor:{...anchor,fiveChecks:fiveChecks.slice(0,4)}});
