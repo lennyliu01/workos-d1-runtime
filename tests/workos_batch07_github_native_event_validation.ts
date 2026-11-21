@@ -29,7 +29,9 @@ const binding:ActiveOwnerReviewBinding={
   nativeEventVerifierRef:"independent-immutable-dispatch-verifier",
   notBefore:"2026-01-01T00:00:00Z",expiresAt:"2027-01-01T00:00:00Z"
 };
-const eventTime=new Date((now-10)*1000).toISOString();
+const runCreatedAt=new Date((now-60)*1000).toISOString();
+const eventTime=new Date((now-40)*1000).toISOString();
+const runUpdatedAt=new Date((now-20)*1000).toISOString();
 const fiveChecks=[
   "EIGHT_FIELD_NULL_SEMANTICS","FROZEN_RESEARCH_FIDELITY",
   "ROLE_DECODER_AND_UNACCEPTED_FACT_EXCLUSION","DATASET_INSTANCE_IDENTITY",
@@ -39,7 +41,8 @@ const run={
   id:Number(runId),repository_id:1380735463,actor_id:Number(actorId),
   triggering_actor_id:Number(actorId),event:"workflow_dispatch",
   head_sha:headSha,path:workflow,run_attempt:1,
-  created_at:eventTime,status:"in_progress" as const,
+  created_at:runCreatedAt,updated_at:runUpdatedAt,
+  status:"completed" as const,conclusion:"success" as const,
 };
 const digestInput=serializeWorkOsPayload({
   scopeKey:SCOPE_KEY,provider:"GITHUB_ACTIONS_OIDC",runId,runAttempt:"1",
@@ -104,6 +107,13 @@ await denied("wrong triggering actor rerun",jwt,{run:{...run,triggering_actor_id
 await denied("run attempt replay",jwt,{run:{...run,run_attempt:2}});
 await denied("wrong repository",jwt,{run:{...run,repository_id:12}});
 await denied("wrong SHA",jwt,{run:{...run,head_sha:"b".repeat(40)}});
+await denied("workflow not completed",jwt,{run:{...run,status:"in_progress",conclusion:null}});
+await denied("queued workflow",jwt,{run:{...run,status:"queued",conclusion:null}});
+await denied("failed workflow",jwt,{run:{...run,status:"completed",conclusion:"failure"}});
+await denied("cancelled workflow",jwt,{run:{...run,status:"completed",conclusion:"cancelled"}});
+await denied("completed before anchored event",jwt,{run:{...run,updated_at:runCreatedAt}});
+await denied("invalid provider completion timestamp",jwt,{run:{...run,updated_at:"unknown"}});
+await denied("anchor before workflow creation",jwt,{anchor:{...anchor,nativeEventAt:new Date((now-70)*1000).toISOString()}});
 await denied("wrong workflow",jwt,{run:{...run,path:"other@main"}});
 await denied("old mock @branch workflow path",jwt,{run:{...run,path:workflow+"@main"}});
 await denied("wrong signed workflow ref",await sign({workflow_ref:workflowRef.replace("main","other")}));
@@ -117,4 +127,4 @@ await denied("OIDC actor id missing",await sign({actor_id:null}));
 await denied("wrong OIDC event",await sign({event_name:"issue_comment"}));
 await denied("wrong signer binding",jwt,{}, {...binding,authorizedHumanProviderId:"other"});
 assert.equal(await make(jwt).verifyExact("github-actions-run:"+runId+":2",binding),null);
-console.log("PASS: signed actor_ID + native GitHub run cross-check + separately anchored exact dispatch; 15 negative cases. MOCK provider; NO production verifier.");
+console.log("PASS: signed actor_ID + completed/success native GitHub run + independently bounded anchored event; negative matrix. MOCK provider; NO production verifier.");
