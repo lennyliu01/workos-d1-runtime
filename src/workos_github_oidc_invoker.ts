@@ -20,6 +20,9 @@ export interface GitHubInvokerIdentity {
   eventName: string;
   runId: string;
   runAttempt: string;
+  // Signed GitHub person-account ID. Optional for R3 compatibility;
+  // R2 must reject if GitHub does not include it.
+  actorId?: string;
   subject: string;
 }
 
@@ -122,12 +125,18 @@ export async function verifyGitHubWorkOsInvoker(
     "RSASSA-PKCS1-v1_5",publicKey,signature as BufferSource,message))) {
     throw new Error("WORKOS_OIDC_SIGNATURE_INVALID");
   }
+  const actorId=claims["actor_id"];
+  if(actorId!==undefined &&
+     (typeof actorId!=="string" || !ID_PATTERN.test(actorId))) {
+    throw new Error("WORKOS_OIDC_ACTOR_ID_INVALID");
+  }
   const subject=strictString(claims,"sub");
   const expectedSubject="repo:"+policy.repository+":ref:"+policy.ref;
   if(subject!==expectedSubject)throw new Error("WORKOS_OIDC_SUBJECT_MISMATCH");
   return {
     issuer:ISSUER,audience:policy.audience,repositoryId:policy.repositoryId,
     repository:policy.repository,workflowRef:policy.workflowRef,
-    ref:policy.ref,eventName:policy.eventName,runId,runAttempt,subject,
+    ref:policy.ref,eventName:policy.eventName,runId,runAttempt,
+    actorId:actorId as string|undefined,subject,
   };
 }
