@@ -73,6 +73,8 @@ jobs:
         run: npx tsx tests/workos_authenticated_runtime_reader_validation.ts
       - name: Batch07 real SQLite D1 transaction and grant-ledger rollback
         run: npx tsx tests/workos_d1_initial_baseline_atomic_sqlite_validation.ts
+      - name: Batch07 candidate Human Owner one-terminal SQLite witness (no provider or production)
+        run: node --experimental-strip-types tests/workos_batch07_owner_terminal_candidate_validation.mjs
       - run: npx tsx tests/workos_openai_live_witness_validation.ts
 
   execute:
