@@ -75,6 +75,8 @@ jobs:
         run: npx tsx tests/workos_d1_initial_baseline_atomic_sqlite_validation.ts
       - name: Batch07 candidate Human Owner one-terminal SQLite witness (no provider or production)
         run: node --experimental-strip-types tests/workos_batch07_owner_terminal_candidate_validation.mjs
+      - name: Batch07 candidate native GitHub Owner event cross-check (synthetic OIDC only)
+        run: npx tsx tests/workos_batch07_github_native_event_validation.ts
       - run: npx tsx tests/workos_openai_live_witness_validation.ts
 
   execute:
