@@ -23,6 +23,9 @@ const SHA40=/^[0-9a-f]{40}$/;
 const SHA64=/^[0-9a-f]{64}$/;
 const ID=/^[0-9]{1,20}$/;
 const REF=/^[A-Za-z0-9._:/#@-]{1,512}$/;
+// GitHub REST workflow_run.path contains the workflow file path only;
+// the signed OIDC workflow_ref separately carries @refs/heads/<branch>.
+const NATIVE_RUN_PATH=/^\.github\/workflows\/[A-Za-z0-9._-]+\.ya?ml$/;
 const ITEMS=[
   "EIGHT_FIELD_NULL_SEMANTICS",
   "FROZEN_RESEARCH_FIDELITY",
@@ -93,7 +96,9 @@ export class CandidateGitHubNativeOwnerEventVerifier implements NativeEventVerif
          binding.scopeKey!==SCOPE_KEY||
          this.policy.oidc.eventName!=="workflow_dispatch"||
          !SHA40.test(this.policy.expectedHeadSha)||
-         !REF.test(this.policy.expectedRunPath))return null;
+         !NATIVE_RUN_PATH.test(this.policy.expectedRunPath)||
+         this.policy.oidc.workflowRef!==
+           `${this.policy.oidc.repository}/${this.policy.expectedRunPath}@${this.policy.oidc.ref}`)return null;
       const invoker=await verifyGitHubWorkOsInvoker(
         this.signedWorkloadJwt,this.policy.oidc,this.fetchImpl,this.nowEpochSeconds);
       if(!invoker.actorId || !ID.test(invoker.actorId) ||
