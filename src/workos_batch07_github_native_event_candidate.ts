@@ -45,6 +45,8 @@ export interface ProviderWorkflowRun {
   run_attempt:number;
   created_at:string;
   status:"queued"|"in_progress"|"completed";
+  conclusion:string|null;
+  updated_at:string;
 }
 export interface NativeRunReader {
   /** Must fetch independently from provider-authenticated GitHub REST. */
@@ -118,7 +120,8 @@ export class CandidateGitHubNativeOwnerEventVerifier implements NativeEventVerif
          run.event!=="workflow_dispatch" ||
          run.head_sha!==this.policy.expectedHeadSha ||
          run.path!==this.policy.expectedRunPath ||
-         !["queued","in_progress","completed"].includes(run.status))return null;
+         run.status!=="completed" ||
+         run.conclusion!=="success")return null;
       const anchored=await this.anchors.readVerifiedAnchoredDispatch(
         invoker.runId,invoker.runAttempt);
       if(!anchored || anchored.revoked ||
@@ -129,7 +132,13 @@ export class CandidateGitHubNativeOwnerEventVerifier implements NativeEventVerif
          anchored.sourceActorId!==invoker.actorId ||
          anchored.exactSubjectSha256!==binding.frozenSubjectSha256 ||
          !SHA64.test(anchored.nativeEventDigest) ||
-         anchored.nativeEventAt!==run.created_at ||
+         // A dispatch creation timestamp is NOT the Human decision time.
+         // The separate approved anchor must attest its own bounded event time.
+         !Number.isFinite(Date.parse(run.created_at)) ||
+         !Number.isFinite(Date.parse(run.updated_at)) ||
+         !Number.isFinite(Date.parse(anchored.nativeEventAt)) ||
+         Date.parse(anchored.nativeEventAt)<Date.parse(run.created_at) ||
+         Date.parse(anchored.nativeEventAt)>Date.parse(run.updated_at) ||
          anchored.fiveChecks.length!==ITEMS.length ||
          !anchored.fiveChecks.every((d,i)=>
            d.item===ITEMS[i] && (d.decision==="ACCEPT"||d.decision==="REJECT")) ||
