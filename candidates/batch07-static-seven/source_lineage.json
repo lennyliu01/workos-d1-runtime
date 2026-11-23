@@ -1,0 +1,93 @@
+[
+  {
+    "Company_ID": "DSG",
+    "Instance_ID": "DSG",
+    "Company_Name": "The Descartes Systems Group Inc.",
+    "Security_Ticker": "DSG",
+    "Exchange": "TSX",
+    "Base_Source_Materials": "https://docs.google.com/document/d/1x7_WCTEVL6MHCi6Q0u1SMaroXLx3biTXyduakm62GM4/edit",
+    "State_Status": "DRAFT",
+    "Monitor_Enabled": false,
+    "Archived": false,
+    "Baseline_Status": "FROZEN_CANDIDATE",
+    "RW_CURRENT_STATE_accepted": false
+  },
+  {
+    "Company_ID": "DOL",
+    "Instance_ID": "DOL",
+    "Company_Name": "Dollarama Inc.",
+    "Security_Ticker": "DOL",
+    "Exchange": "TSX",
+    "Base_Source_Materials": "https://docs.google.com/document/d/170xNvoohTXeCT7rcIVboigFIhiKcLmxn2KmLqYGAc24/edit",
+    "State_Status": "DRAFT",
+    "Monitor_Enabled": false,
+    "Archived": false,
+    "Baseline_Status": "FROZEN_CANDIDATE",
+    "RW_CURRENT_STATE_accepted": false
+  },
+  {
+    "Company_ID": "WSP",
+    "Instance_ID": "WSP",
+    "Company_Name": "WSP Global Inc.",
+    "Security_Ticker": "WSP",
+    "Exchange": "TSX",
+    "Base_Source_Materials": "https://docs.google.com/document/d/1mtEIcqOE9efW_4dc-zP_mG8feXrw1YAFZYtpwAyH49I/edit",
+    "State_Status": "DRAFT",
+    "Monitor_Enabled": false,
+    "Archived": false,
+    "Baseline_Status": "FROZEN_CANDIDATE",
+    "RW_CURRENT_STATE_accepted": false
+  },
+  {
+    "Company_ID": "GIBA",
+    "Instance_ID": "GIBA",
+    "Company_Name": "CGI Inc.",
+    "Security_Ticker": "GIB.A",
+    "Exchange": "TSX",
+    "Base_Source_Materials": "https://docs.google.com/document/d/12P9yYGNtlSp9XPnLjXc1Id4wuaWwJvzSuZ8k4BpS1Wc/edit",
+    "State_Status": "DRAFT",
+    "Monitor_Enabled": false,
+    "Archived": false,
+    "Baseline_Status": "FROZEN_CANDIDATE",
+    "RW_CURRENT_STATE_accepted": false
+  },
+  {
+    "Company_ID": "NA",
+    "Instance_ID": "NA",
+    "Company_Name": "National Bank of Canada",
+    "Security_Ticker": "NA",
+    "Exchange": "TSX",
+    "Base_Source_Materials": "https://docs.google.com/document/d/1lh6NqyS55lnrSMcvH34COSHlcP4MouqPcfto_2uXXLI/edit",
+    "State_Status": "DRAFT",
+    "Monitor_Enabled": false,
+    "Archived": false,
+    "Baseline_Status": "FROZEN_CANDIDATE",
+    "RW_CURRENT_STATE_accepted": false
+  },
+  {
+    "Company_ID": "ENB",
+    "Instance_ID": "ENB",
+    "Company_Name": "Enbridge Inc.",
+    "Security_Ticker": "ENB",
+    "Exchange": "TSX",
+    "Base_Source_Materials": "https://docs.google.com/document/d/1bo71pO4I9DBfPHJv-gZNah4pF3_uz4cFFgV9sD2-K_k/edit",
+    "State_Status": "DRAFT",
+    "Monitor_Enabled": false,
+    "Archived": false,
+    "Baseline_Status": "FROZEN_CANDIDATE",
+    "RW_CURRENT_STATE_accepted": false
+  },
+  {
+    "Company_ID": "ATD",
+    "Instance_ID": "ATD",
+    "Company_Name": "Alimentation Couche-Tard Inc.",
+    "Security_Ticker": "ATD",
+    "Exchange": "TSX",
+    "Base_Source_Materials": "https://docs.google.com/document/d/1XP53wSoPYhm5UBgFGx2Vz5Fb-f2JFyR0eAa2rpFFA1c/edit",
+    "State_Status": "DRAFT",
+    "Monitor_Enabled": false,
+    "Archived": false,
+    "Baseline_Status": "FROZEN_CANDIDATE",
+    "RW_CURRENT_STATE_accepted": false
+  }
+]
