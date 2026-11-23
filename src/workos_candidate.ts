@@ -91,7 +91,7 @@ interface CurrentRow {
 
 const SAFE_TOKEN = /^[A-Za-z0-9._:-]+$/;
 const FX_SINGLETON = new Set(["SINGLETON"]);
-const RW_INSTANCES = new Set(["ENPLAS", "SERVICENOW", "FIGMA", "DSG"]);
+const RW_INSTANCES = new Set(["ENPLAS", "SERVICENOW", "FIGMA", "DSG", "DOL", "WSP", "GIBA", "NA", "ENB", "ATD"]);
 
 const WORKOS_DATASETS: Record<string, DatasetControl> = {
   FX_POLICY_ANALYSIS_STATE: {
