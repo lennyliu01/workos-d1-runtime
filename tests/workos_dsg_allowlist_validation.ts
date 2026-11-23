@@ -1,6 +1,6 @@
 /**
  * ISOLATED proof only. Exercises the existing Worker guard and D1 call shape
- * after adding DSG to the static list. No Google Sheet, real D1, credentials,
+ * after adding seven new companies to the static list. No Google Sheet, real D1, credentials,
  * publisher, or production Worker is touched.
  */
 import assert from "node:assert/strict";
@@ -84,26 +84,30 @@ const read = (instance: string) => ({
   operation: "READ", dataset_id: "RW_CURRENT_STATE",
   instance_id: instance, selector: { kind: "CURRENT" },
 });
-const write = (instance: string, caller = "Rolling_Wedge_Workflow", idem = "DSG-INIT-1") => ({
+const write = (instance: string, caller = "Rolling_Wedge_Workflow", idem = `STATIC-${instance}-INIT-1`) => ({
   task_id: "ROLLING_WEDGE_INVESTMENT",
   caller_identity: caller, operation: "WRITE", dataset_id: "RW_CURRENT_STATE",
   instance_id: instance, expected_version: 0, idempotency_key: idem,
   payload: {
-    Company_ID: instance, Company_Name: "ISOLATED DSG FIXTURE",
-    Ticker: "DSG", Exchange: "TSX", Currency: null, State_As_Of: null,
+    Company_ID: instance, Company_Name: `ISOLATED ${instance} FIXTURE`,
+    Ticker: instance === "GIBA" ? "GIB.A" : instance, Exchange: "ISOLATED", Currency: null, State_As_Of: null,
     Base_Source_Materials: "ISOLATED_TEST_FIXTURE", Structured_State_Content: "{}",
   },
 });
 
-// The four listed instances pass the static guard, but absent state is 404.
-for (const id of ["ENPLAS", "SERVICENOW", "FIGMA", "DSG"]) {
+// All ten instances (three incumbents, seven additions) pass the legacy guard.
+const incumbents = ["ENPLAS", "SERVICENOW", "FIGMA"];
+const additions = ["DSG", "DOL", "WSP", "GIBA", "NA", "ENB", "ATD"];
+const accepted = [...incumbents, ...additions];
+assert.equal(new Set(accepted).size, 10);
+for (const id of accepted) {
   const response = await post(read(id));
-  assert.equal(response.status, 404, id + " must pass instance guard and reach empty D1");
+  assert.equal(response.status, 404, id + " must reach empty isolated D1");
   assert.equal(response.body.error, "NOT_FOUND");
 }
 
-// An unknown instance, including a typo, still fails before any D1 query.
-for (const id of ["DOL", "DGS", "ATD"]) {
+// Unknown, misspelled, or unlisted companies must be denied before touching D1.
+for (const id of ["DGS", "UNKNOWN", "PLTR", ""]) {
   const before = db.queries;
   const response = await post(read(id));
   assert.equal(response.status, 403, id + " must be denied by static guard");
@@ -111,44 +115,60 @@ for (const id of ["DOL", "DGS", "ATD"]) {
   assert.equal(db.queries, before);
 }
 
-const badWriterBefore = db.queries;
-const denied = await post(write("DSG", "MONITOR"));
-assert.equal(denied.status, 403);
-assert.equal(denied.body.error, "WRITE_NOT_AUTHORIZED");
-assert.equal(db.queries, badWriterBefore);
+// Keep identity and authentication restrictions unchanged for all seven.
+for (const id of additions) {
+  const before = db.queries;
+  const denied = await post(write(id, "MONITOR"));
+  assert.equal(denied.status, 403, id + " wrong Writer");
+  assert.equal(denied.body.error, "WRITE_NOT_AUTHORIZED");
+  assert.equal(db.queries, before);
+}
 
 const wrongToken = await post(read("DSG"), "WRONG");
 assert.equal(wrongToken.status, 401);
 assert.equal(wrongToken.body.error, "UNAUTHORIZED");
 
-const first = await post(write("DSG"));
-assert.equal(first.status, 200);
-assert.equal(first.body.status, "SUCCESS");
-assert.equal(first.body.version, 1);
-assert.equal(first.body.previous_version, 0);
-assert.equal(first.body.replayed, false);
-assert.equal(db.states.size, 1);
+// Each of seven new instances can write v0→v1 into its OWN isolated state,
+// read it back, replay identically, and rejects a second v0 bootstrap.
+for (let index = 0; index < additions.length; index++) {
+  const id = additions[index];
+  const first = await post(write(id));
+  assert.equal(first.status, 200, id + " initial write");
+  assert.equal(first.body.status, "SUCCESS");
+  assert.equal(first.body.version, 1);
+  assert.equal(first.body.previous_version, 0);
+  assert.equal(first.body.replayed, false);
+  assert.equal(db.states.size, index + 1);
 
-const after = await post(read("DSG"));
-assert.equal(after.status, 200);
-assert.equal(after.body.version, 1);
-assert.equal(after.body.payload.Company_ID, "DSG");
+  const after = await post(read(id));
+  assert.equal(after.status, 200);
+  assert.equal(after.body.version, 1);
+  assert.equal(after.body.payload.Company_ID, id);
 
-const replay = await post(write("DSG"));
-assert.equal(replay.status, 200);
-assert.equal(replay.body.replayed, true);
-assert.equal(db.states.size, 1);
+  const replay = await post(write(id));
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(db.states.size, index + 1);
 
-const stale = await post(write("DSG", "Rolling_Wedge_Workflow", "DSG-INIT-2"));
-assert.equal(stale.status, 409);
-assert.equal(stale.body.error, "STALE_STATE");
+  const stale = await post(write(id, "Rolling_Wedge_Workflow", `STATIC-${id}-INIT-2`));
+  assert.equal(stale.status, 409, id + " must reject new conflicting v0");
+  assert.equal(stale.body.error, "STALE_STATE");
 
-const historyRead = await post({
-  task_id: "ROLLING_WEDGE_INVESTMENT", caller_identity: "Rolling_Wedge_Workflow",
-  operation: "READ", dataset_id: "RW_EVIDENCE_HISTORY",
-  instance_id: "DSG", selector: { kind: "TAIL", limit: 1 },
-});
-assert.equal(historyRead.status, 200);
-assert.deepEqual(historyRead.body.records, []);
+  const historyRead = await post({
+    task_id: "ROLLING_WEDGE_INVESTMENT", caller_identity: "Rolling_Wedge_Workflow",
+    operation: "READ", dataset_id: "RW_EVIDENCE_HISTORY",
+    instance_id: id, selector: { kind: "TAIL", limit: 1 },
+  });
+  assert.equal(historyRead.status, 200);
+  assert.deepEqual(historyRead.body.records, []);
+}
 
-console.log("PASS: static DSG allowlist, isolated v0→v1 write/readback/replay, incumbent reads, nonlisted instances and wrong writer denied; NO real D1/Manifest/Publisher tested.");
+for (const id of incumbents) {
+  const response = await post(read(id));
+  assert.equal(response.status, 404, id + " read behavior must not regress");
+  assert.equal(response.body.error, "NOT_FOUND");
+}
+assert.equal(db.states.size, 7);
+assert.deepEqual([...db.states.keys()].sort(), additions.map(id => "RW_CURRENT_STATE:" + id).sort());
+
+console.log("PASS: all 7 static RW additions + 3 incumbents pass guard, 7 isolated v0→v1 write/readback/replay and stale denial, unknown instances & wrong Writers denied; NO real D1/Manifest/Publisher tested.");
