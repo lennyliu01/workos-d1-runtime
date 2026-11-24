@@ -172,3 +172,5 @@ assert.equal(db.states.size, 7);
 assert.deepEqual([...db.states.keys()].sort(), additions.map(id => "RW_CURRENT_STATE:" + id).sort());
 
 console.log("PASS: all 7 static RW additions + 3 incumbents pass guard, 7 isolated v0→v1 write/readback/replay and stale denial, unknown instances & wrong Writers denied; NO real D1/Manifest/Publisher tested.");
+
+await import('./workos_batch07_joined_draft_validation.js');
