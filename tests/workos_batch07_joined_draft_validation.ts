@@ -60,9 +60,9 @@ function isolated(){
     return {status:response.status,body:await response.json() as Req};
   }
   async function gated(req:Req){
-    const result=spawnSync("python3",[fixture],{input:JSON.stringify(req),encoding:"utf8",env:{...process.env,PYTHONDONTWRITEBYTECODE:"1"}});
-    assert.equal(result.status,0,result.stderr);
-    const gate=JSON.parse(result.stdout);
+    const gateProcess=spawnSync("python3",[fixture],{input:JSON.stringify(req),encoding:"utf8",env:{...process.env,PYTHONDONTWRITEBYTECODE:"1"}});
+    assert.equal(gateProcess.status,0,gateProcess.stderr);
+    const gate=JSON.parse(gateProcess.stdout);
     if(!gate.allowed)return {status:403,body:{error:gate.code}};
     // The test scope is server-side, never a caller-supplied allow flag.
     const {epoch,mode,readback_key,...body}=req;
