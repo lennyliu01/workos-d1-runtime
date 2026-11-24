@@ -16,11 +16,11 @@ writers=rows("candidate_manifest_write.csv")
 readers=rows("candidate_manifest_read.csv")
 baseline=(root/"Companies_Baseline.txt").read_text(encoding="utf-8-sig")
 entries=[]
-for inst in ("DSG","ENPLAS","SERVICENOW","FIGMA"):
+for inst in ("DSG","DOL","ENPLAS","SERVICENOW","FIGMA"):
     section=baseline.split("## "+inst+"\n")[1].split("\n## ")[0]
-    state="DRAFT" if inst=="DSG" else "ACTIVE"
+    state="DRAFT" if inst in ("DSG","DOL") else "ACTIVE"
     assert "State_Status: `"+state+"`" in section
-    if inst=="DSG": assert "Monitor_Enabled: `FALSE`" in section
+    if state=="DRAFT": assert "Monitor_Enabled: `FALSE`" in section
     for dataset in (("RW_CURRENT_STATE","RW_EVIDENCE_HISTORY") if inst=="DSG" else ("RW_CURRENT_STATE",)):
         p=[x for x in instances if x["Dataset_ID"]==dataset and x["Exact_Resource_Resolution_Rule"].endswith("Instance_ID="+inst)]
         w=[x for x in writers if x["Dataset_ID"]==dataset and x["Instance_Rule"]=="REGISTERED_INSTANCE_BINDING:"+inst]

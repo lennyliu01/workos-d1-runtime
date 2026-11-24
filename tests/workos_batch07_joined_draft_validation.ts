@@ -126,7 +126,8 @@ assert.equal(race.rows().length,1);pass("concurrent competing CAS0 exactly one s
 race.db.close();
 for(const [name,req] of [
   ["wrong Writer",init("TEST-INIT-1",{caller_identity:"REVISER"})],
-  ["wrong Instance",init("TEST-INIT-1",{instance_id:"DOL"})],
+  ["wrong registered DRAFT Instance",init("TEST-INIT-1",{instance_id:"DOL",payload:{...payload,Company_ID:"DOL",Ticker:"DOL"}})],
+  ["unknown Instance",init("TEST-INIT-1",{instance_id:"DGS"})],
   ["wrong Dataset",init("TEST-INIT-1",{dataset_id:"RW_UNKNOWN"})],
   ["extra field",init("TEST-INIT-1",{payload:{...payload,Extra:"bad"}})],
   ["missing field",init("TEST-INIT-1",{payload:Object.fromEntries(Object.entries(payload).filter(([k])=>k!=="Currency"))})],
