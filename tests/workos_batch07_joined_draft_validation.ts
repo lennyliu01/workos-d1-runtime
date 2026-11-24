@@ -77,7 +77,14 @@ function isolated(){
           mode!=="READBACK"||req.selector?.kind!=="CURRENT"))
         return {status:403,body:{error:"TEST_ONLY_SCOPE_DENIED"}};
     }else if(mode!==undefined)return {status:403,body:{error:"TEST_ONLY_SCOPE_DENIED"}};
-    return worker(body);
+    const result=await worker(body);
+    if(req.instance_id==="DSG" && mode==="READBACK" && result.status===200){
+      const row=db.prepare("SELECT idempotency_key,version,previous_version,payload_json FROM workos_current_state_versions WHERE invocation_id=?").get(result.body.invocation_id) as Req|undefined;
+      if(!row||row.idempotency_key!==readback_key||row.version!==1||row.previous_version!==0||
+          canonicalRWJson(JSON.parse(row.payload_json))!==scopes.get(readback_key)?.payload)
+        return {status:403,body:{error:"TEST_ONLY_READBACK_BINDING_MISMATCH"}};
+    }
+    return result;
   }
   const rows=()=>db.prepare("SELECT * FROM workos_current_state_versions ORDER BY instance_id,version").all() as Req[];
   const history=()=>db.prepare("SELECT * FROM workos_append_records").all();
@@ -109,6 +116,9 @@ pass("identical replay");
 const stale=await f.gated(init("TEST-INIT-2"));
 assert.equal(stale.status,409,JSON.stringify(stale));assert.equal(stale.body.error,"STALE_STATE");
 assert.equal(f.rows().length,1);pass("second distinct authorized TEST ONLY CAS0 denied by Writer");
+const otherRead=await f.gated(readback("TEST-INIT-2"));
+assert.equal(otherRead.status,403);assert.equal(otherRead.body.error,"TEST_ONLY_READBACK_BINDING_MISMATCH");
+pass("readback cannot use another issued request key");
 const race=isolated();race.issue("TEST-RACE-1");race.issue("TEST-RACE-2");
 const competing=await Promise.all([race.gated(init("TEST-RACE-1")),race.gated(init("TEST-RACE-2"))]);
 assert.deepEqual(competing.map(x=>x.status).sort(),[200,409]);
