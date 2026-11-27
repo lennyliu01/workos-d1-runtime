@@ -1,4 +1,5 @@
 import { handleWorkOsCandidatePersistence } from "./workos_candidate";
+import { AUTHORITY_READ_PATH, handleAuthorityRead } from "./authority_reader_binding";
 
 type ExecutionSurface = "CHAT" | "WORK";
 type TriggerMode = "HUMAN" | "SCHEDULE";
@@ -32,6 +33,7 @@ interface D1Database {
 interface Env {
   DB: D1Database;
   RUNTIME_SECRET?: string;
+  AUTHORITY_READER_SECRET?: string;
 }
 
 interface TimeRoundtripRequest {
@@ -661,6 +663,7 @@ async function handleStateCompareAndSet(request: Request, env: Env): Promise<Res
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === AUTHORITY_READ_PATH) return handleAuthorityRead(request, env);
 
     if (request.method === "GET" && url.pathname === "/") {
       return Response.json({
