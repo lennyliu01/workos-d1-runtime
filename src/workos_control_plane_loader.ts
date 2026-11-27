@@ -49,6 +49,7 @@ export interface AuthoritySnapshot {
 
 export interface LoadedControlPlane {
   task: TaskRegistration;
+  assertAuthorityFresh(): Promise<void>;
   authority: AuthoritySnapshot;
   manifestFileId: string;
   manifestFingerprint: string;
@@ -341,16 +342,23 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
     ? await reader.readDriveText(task.companiesBaselineFileId)
     : undefined;
 
-  if (generation) {
+  const assertAuthorityFresh = async (): Promise<void> => {
     const freshAgents = await reader.readDriveText(AGENTS_FILE_ID);
-    if (freshAgents !== agents || authorityRoute(freshAgents) !== "D1") throw new Error("AUTHORITY_SELECTOR_DRIFT");
+    if (freshAgents !== agents || authorityRoute(freshAgents) !== route) throw new Error("AUTHORITY_SELECTOR_DRIFT");
+    if (!generation) {
+      const freshRow = singleRow(await selectedAuthorityRows(freshAgents, reader), "AUTHORITY_PUBLICATION");
+      if (JSON.stringify(freshRow) !== JSON.stringify(authorityRow)) throw new Error("AUTHORITY_GENERATION_DRIFT");
+      return;
+    }
     const fresh = parseAuthorityGeneration(await reader.readD1AuthorityGeneration!());
     if (!sameGeneration(generation, fresh)) throw new Error("AUTHORITY_GENERATION_DRIFT");
     const freshCutovers = rowsToObjects(await reader.readSheet(REPOSITORY_CUTOVER_CONTROL_ID, "Cutovers", "A1:AC200"));
     const freshMembers = rowsToObjects(await reader.readSheet(REPOSITORY_CUTOVER_CONTROL_ID, "Manifest_Set_Members", "A1:E200"));
     verifyAuthorityCompanions(fresh, freshCutovers, freshMembers, taskId, task.workflowFileId);
     if (!sameGeneration(fresh, parseAuthorityGeneration(await reader.readD1AuthorityGeneration!()))) throw new Error("AUTHORITY_GENERATION_DRIFT");
-  }
+    if (await reader.readDriveText(AGENTS_FILE_ID) !== agents) throw new Error("AUTHORITY_SELECTOR_DRIFT");
+  };
+  if (generation) await assertAuthorityFresh();
 
   const authorityPublication: AuthorityPublicationProjection = {
     authorityScopeFingerprint: authorityRow.Authority_Scope_Fingerprint,
@@ -369,6 +377,7 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
 
   return {
     task,
+    assertAuthorityFresh,
     authority: snapshot,
     manifestFileId,
     manifestFingerprint: metadata.Manifest_Fingerprint,
