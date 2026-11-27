@@ -1,3 +1,4 @@
+import { selectedAuthorityRows } from "./authority_selector_candidate.js";
 import {
   PINNED_GATE_BLOB,
   PINNED_GATE_CONFIG_FINGERPRINT,
@@ -15,6 +16,7 @@ export const REPOSITORY_CUTOVER_CONTROL_ID = "1Ckqy598EPE9CO3gejn2b0sLC3IC1_FcwS
 export type SupportedTaskId = "US_JAPAN_FX_POLICY" | "ROLLING_WEDGE_INVESTMENT";
 
 export interface ExactControlPlaneReader {
+  readD1AuthorityPublication?(): Promise<string[][]>;
   readDriveText(fileId: string): Promise<string>;
   readSheet(spreadsheetId: string, sheetName: string, range: string): Promise<string[][]>;
 }
@@ -230,7 +232,7 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
   const task = parseRegistration(agents, taskId);
 
   const authorityRow = singleRow(
-    await reader.readSheet(REPOSITORY_CUTOVER_CONTROL_ID, "Authority_Publication", "A1:H5"),
+    await selectedAuthorityRows(agents, reader),
     "AUTHORITY_PUBLICATION",
   );
 

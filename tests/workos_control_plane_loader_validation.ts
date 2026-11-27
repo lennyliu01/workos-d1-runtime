@@ -6,6 +6,7 @@ import { PINNED_GATE_BLOB, PINNED_GATE_CONFIG_FINGERPRINT, authorizePersistence,
 const REG="REG", MAN="MAN", ACC="ACC", MIG="MIG", PRUNE="PRUNE", TX="TX", ROUTE="ROUTE", SHARD="SHARD", BASE="BASE";
 const workflowId="WF",profileId="PROFILE",collectorId="COLLECTOR",readerId="READER";
 const agents=`# AGENTS.md
+- \`Repository_Cutover_Control\` / singleton \`Authority_Publication\` — \`https://docs.google.com/spreadsheets/d/1Ckqy598EPE9CO3gejn2b0sLC3IC1_FcwScRFPE2JumM/edit\`
 ## TASK_ID: US_JAPAN_FX_POLICY
 ### Workflow
 **Name:** \`US_Japan_FX_Policy_Workflow\`
