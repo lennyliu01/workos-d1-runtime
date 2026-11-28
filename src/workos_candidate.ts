@@ -1,3 +1,4 @@
+import {authorityFencePredicate,authorityFenceValues,type AuthorityFence} from "./authority_admission_fence.js";
 type ExecutionSurface = "CHAT" | "WORK";
 type TriggerMode = "HUMAN" | "SCHEDULE";
 type TaskId = "US_JAPAN_FX_POLICY" | "ROLLING_WEDGE_INVESTMENT";
@@ -23,6 +24,7 @@ interface D1PreparedStatement {
 interface CandidateEnv {
   DB: { prepare(query: string): D1PreparedStatement };
   RUNTIME_SECRET?: string;
+  authorityFence?: AuthorityFence;
 }
 
 interface DatasetControl {
@@ -456,8 +458,10 @@ async function handleAppendWrite(body: WriteRequest, control: DatasetControl, en
   const invocationId = crypto.randomUUID();
   let result: D1RunResult;
   try {
-    result = await env.DB.prepare("INSERT INTO workos_append_records (dataset_id,instance_id,record_key,payload_json,invocation_id,idempotency_key,db_written_at) VALUES (?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))")
-      .bind(body.dataset_id, body.instance_id, body.record_key, payloadJson, invocationId, body.idempotency_key).run();
+    const values=[body.dataset_id,body.instance_id,body.record_key,payloadJson,invocationId,body.idempotency_key];
+    const prefix="INSERT INTO workos_append_records (dataset_id,instance_id,record_key,payload_json,invocation_id,idempotency_key,db_written_at) ";
+    const sql=env.authorityFence?prefix+"SELECT ?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE "+authorityFencePredicate:prefix+"VALUES (?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
+    result=await env.DB.prepare(sql).bind(...values,...(env.authorityFence?authorityFenceValues(env.authorityFence):[])).run();
   } catch {
     try {
       const replay = await replayAppend(body, control, env, payloadJson);
@@ -529,11 +533,11 @@ async function handleCurrentWrite(body: WriteRequest, control: DatasetControl, e
   let result: D1RunResult;
   try {
     if (body.expected_version === 0) {
-      result = await env.DB.prepare("INSERT INTO workos_current_state_versions (dataset_id,instance_id,version,previous_version,payload_json,invocation_id,idempotency_key,db_written_at) SELECT ?,?,1,0,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE NOT EXISTS (SELECT 1 FROM workos_current_state_versions WHERE dataset_id=? AND instance_id=?)")
-        .bind(body.dataset_id, body.instance_id, payloadJson, invocationId, body.idempotency_key, body.dataset_id, body.instance_id).run();
+      result = await env.DB.prepare("INSERT INTO workos_current_state_versions (dataset_id,instance_id,version,previous_version,payload_json,invocation_id,idempotency_key,db_written_at) SELECT ?,?,1,0,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE NOT EXISTS (SELECT 1 FROM workos_current_state_versions WHERE dataset_id=? AND instance_id=?)"+(env.authorityFence?" AND "+authorityFencePredicate:""))
+        .bind(body.dataset_id, body.instance_id, payloadJson, invocationId, body.idempotency_key, body.dataset_id, body.instance_id,...(env.authorityFence?authorityFenceValues(env.authorityFence):[])).run();
     } else {
-      result = await env.DB.prepare("INSERT INTO workos_current_state_versions (dataset_id,instance_id,version,previous_version,payload_json,invocation_id,idempotency_key,db_written_at) SELECT ?,?,current.version+1,current.version,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM (SELECT version FROM workos_current_state_versions WHERE dataset_id=? AND instance_id=? ORDER BY version DESC LIMIT 1) AS current WHERE current.version=?")
-        .bind(body.dataset_id, body.instance_id, payloadJson, invocationId, body.idempotency_key, body.dataset_id, body.instance_id, body.expected_version).run();
+      result = await env.DB.prepare("INSERT INTO workos_current_state_versions (dataset_id,instance_id,version,previous_version,payload_json,invocation_id,idempotency_key,db_written_at) SELECT ?,?,current.version+1,current.version,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM (SELECT version FROM workos_current_state_versions WHERE dataset_id=? AND instance_id=? ORDER BY version DESC LIMIT 1) AS current WHERE current.version=?"+(env.authorityFence?" AND "+authorityFencePredicate:""))
+        .bind(body.dataset_id, body.instance_id, payloadJson, invocationId, body.idempotency_key, body.dataset_id, body.instance_id, body.expected_version,...(env.authorityFence?authorityFenceValues(env.authorityFence):[])).run();
     }
   } catch {
     try {

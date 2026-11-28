@@ -111,9 +111,3 @@ export async function handlePublicationOperation(http:Request,env:PublicationBin
   }catch{return deny("PUBLICATION_PRECONDITION_UNAVAILABLE",503)}
 }
 
-// No legacy business bearer can cross the candidate Worker mutation ingress.
-// Positive admission remains intentionally unavailable until the existing Gate
-// can supply a trusted session and the mutation is fenced in its transaction.
-export function denyUnfencedBusinessIngress():Response{
-  return deny("AUTHORITY_BOUNDARY_ADMISSION_UNBOUND");
-}
