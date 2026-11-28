@@ -1,3 +1,4 @@
+import type { PublicationTransport } from "./authority_publication_binding.js";
 import {
   FROZEN_PRODUCTION_DENYLIST,
   MATERIALIZED_FIXTURE_PRODUCTION_DENYLIST_ID,
@@ -272,7 +273,13 @@ function isExecutorStop(value: ExactRecord | ExecutorStop): value is ExecutorSto
 }
 
 export class ExecutorCore {
-  constructor(private readonly provider: ControlPlaneProvider) {}
+  constructor(private readonly provider: ControlPlaneProvider, private readonly publicationTransport?: PublicationTransport) {}
+
+  // Same incumbent Executor; never construct a trusted context from caller fields.
+  async executeD1Publication(requestId: string, operation: "COMMIT" | "STATUS") {
+    if (!this.publicationTransport || !/^[A-Za-z0-9._:-]{1,256}$/.test(requestId) || (operation !== "COMMIT" && operation !== "STATUS")) return { status: "DENIED" as const };
+    return this.publicationTransport(operation, requestId);
+  }
 
   async execute(input: ExecutorInput): Promise<ExecutorResult> {
     if (input.mode === "WITNESS") {

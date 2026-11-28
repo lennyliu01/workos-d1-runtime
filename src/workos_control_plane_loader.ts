@@ -1,3 +1,5 @@
+import { authorityRoute, selectedAuthorityRows } from "./authority_selector_candidate.js";
+import { fetchAuthorityGeneration, generationRows, parseAuthorityGeneration, sameGeneration, verifyAuthorityCompanions, type AuthorityGeneration } from "./authority_reader_binding.js";
 import {
   PINNED_GATE_BLOB,
   PINNED_GATE_CONFIG_FINGERPRINT,
@@ -15,6 +17,7 @@ export const REPOSITORY_CUTOVER_CONTROL_ID = "1Ckqy598EPE9CO3gejn2b0sLC3IC1_FcwS
 export type SupportedTaskId = "US_JAPAN_FX_POLICY" | "ROLLING_WEDGE_INVESTMENT";
 
 export interface ExactControlPlaneReader {
+  readD1AuthorityGeneration?(): Promise<AuthorityGeneration>;
   readDriveText(fileId: string): Promise<string>;
   readSheet(spreadsheetId: string, sheetName: string, range: string): Promise<string[][]>;
 }
@@ -46,6 +49,7 @@ export interface AuthoritySnapshot {
 
 export interface LoadedControlPlane {
   task: TaskRegistration;
+  assertAuthorityFresh(): Promise<void>;
   authority: AuthoritySnapshot;
   manifestFileId: string;
   manifestFingerprint: string;
@@ -229,8 +233,14 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
   const agents = await reader.readDriveText(AGENTS_FILE_ID);
   const task = parseRegistration(agents, taskId);
 
+  const route = authorityRoute(agents);
+  let generation: AuthorityGeneration | undefined;
+  if (route === "D1") {
+    if (!reader.readD1AuthorityGeneration) throw new Error("D1_AUTHORITY_TRANSPORT_UNBOUND");
+    generation = parseAuthorityGeneration(await reader.readD1AuthorityGeneration());
+  }
   const authorityRow = singleRow(
-    await reader.readSheet(REPOSITORY_CUTOVER_CONTROL_ID, "Authority_Publication", "A1:H5"),
+    generation ? generationRows(generation) : await selectedAuthorityRows(agents, reader),
     "AUTHORITY_PUBLICATION",
   );
 
@@ -268,6 +278,7 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
   const members = rowsToObjects(
     await reader.readSheet(REPOSITORY_CUTOVER_CONTROL_ID, "Manifest_Set_Members", "A1:E200"),
   );
+  if (generation) verifyAuthorityCompanions(generation, cutovers, members, taskId, task.workflowFileId);
   const manifestMembers = members.filter(
     (r) => r.Manifest_Set_ID === snapshot.manifestSetId && r.Task_ID === taskId && r.Projection_State === "ACTIVE",
   );
@@ -331,6 +342,24 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
     ? await reader.readDriveText(task.companiesBaselineFileId)
     : undefined;
 
+  const assertAuthorityFresh = async (): Promise<void> => {
+    const freshAgents = await reader.readDriveText(AGENTS_FILE_ID);
+    if (freshAgents !== agents || authorityRoute(freshAgents) !== route) throw new Error("AUTHORITY_SELECTOR_DRIFT");
+    if (!generation) {
+      const freshRow = singleRow(await selectedAuthorityRows(freshAgents, reader), "AUTHORITY_PUBLICATION");
+      if (JSON.stringify(freshRow) !== JSON.stringify(authorityRow)) throw new Error("AUTHORITY_GENERATION_DRIFT");
+      return;
+    }
+    const fresh = parseAuthorityGeneration(await reader.readD1AuthorityGeneration!());
+    if (!sameGeneration(generation, fresh)) throw new Error("AUTHORITY_GENERATION_DRIFT");
+    const freshCutovers = rowsToObjects(await reader.readSheet(REPOSITORY_CUTOVER_CONTROL_ID, "Cutovers", "A1:AC200"));
+    const freshMembers = rowsToObjects(await reader.readSheet(REPOSITORY_CUTOVER_CONTROL_ID, "Manifest_Set_Members", "A1:E200"));
+    verifyAuthorityCompanions(fresh, freshCutovers, freshMembers, taskId, task.workflowFileId);
+    if (!sameGeneration(fresh, parseAuthorityGeneration(await reader.readD1AuthorityGeneration!()))) throw new Error("AUTHORITY_GENERATION_DRIFT");
+    if (await reader.readDriveText(AGENTS_FILE_ID) !== agents) throw new Error("AUTHORITY_SELECTOR_DRIFT");
+  };
+  if (generation) await assertAuthorityFresh();
+
   const authorityPublication: AuthorityPublicationProjection = {
     authorityScopeFingerprint: authorityRow.Authority_Scope_Fingerprint,
     currentCommittedCutoverId: authorityRow.Current_Committed_Cutover_ID,
@@ -348,6 +377,7 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
 
   return {
     task,
+    assertAuthorityFresh,
     authority: snapshot,
     manifestFileId,
     manifestFingerprint: metadata.Manifest_Fingerprint,
@@ -393,8 +423,12 @@ export async function loadControlPlane(reader: ExactControlPlaneReader, taskId: 
 }
 
 export class GoogleExactControlPlaneReader implements ExactControlPlaneReader {
-  constructor(private readonly accessToken: string, private readonly fetchImpl: typeof fetch = fetch) {
+  constructor(private readonly accessToken: string, private readonly fetchImpl: typeof fetch = fetch, private readonly authorityReaderSecret?: string) {
     if (!accessToken) throw new Error("GOOGLE_ACCESS_TOKEN_MISSING");
+  }
+
+  async readD1AuthorityGeneration(): Promise<AuthorityGeneration> {
+    return fetchAuthorityGeneration(this.authorityReaderSecret, this.fetchImpl);
   }
 
   private auth(): Record<string, string> {

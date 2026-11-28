@@ -6,6 +6,7 @@ import { PINNED_GATE_BLOB, PINNED_GATE_CONFIG_FINGERPRINT, authorizePersistence,
 const REG="REG", MAN="MAN", ACC="ACC", MIG="MIG", PRUNE="PRUNE", TX="TX", ROUTE="ROUTE", SHARD="SHARD", BASE="BASE";
 const workflowId="WF",profileId="PROFILE",collectorId="COLLECTOR",readerId="READER";
 const agents=`# AGENTS.md
+- \`Repository_Cutover_Control\` / singleton \`Authority_Publication\` — \`https://docs.google.com/spreadsheets/d/1Ckqy598EPE9CO3gejn2b0sLC3IC1_FcwScRFPE2JumM/edit\`
 ## TASK_ID: US_JAPAN_FX_POLICY
 ### Workflow
 **Name:** \`US_Japan_FX_Policy_Workflow\`
@@ -177,3 +178,49 @@ const blockedRw=await loadLiveGateContext(new FakeReader("baselineDraft"),{
 assert.equal(blockedRw.businessAuthorityStates.get("RW_CURRENT_STATE\u0000ENPLAS"),"DRAFT");
 
 console.log("workos_control_plane_loader_validation: PASS");
+
+// Candidate D1 path and stale selector regression, entirely local fixtures.
+import { D1_AUTHORITY_LOCATOR, LEGACY_AUTHORITY_LOCATOR } from "../src/authority_selector_candidate.js";
+import { parseAuthorityGeneration } from "../src/authority_reader_binding.js";
+const d1Cutover = {Cutover_ID:"CUT",Authority_Scope_Fingerprint:"scope",Activation_Epoch:"10",Target_Registry_File_ID:REG,Target_Registry_Snapshot_ID:"RS1",Target_Registry_Fingerprint:"RF",Target_Archive_Schema_Catalog_File_ID:"schema",Target_Archive_Schema_Catalog_Fingerprint:"sf",Target_Manifest_Set_ID:"MSET1",Target_Manifest_Set_Fingerprint:"mf",Target_Workflow_Set_Fingerprint:"WFSET",Candidate_Workflow_File_IDs:"US_JAPAN_FX_POLICY=WF",Persistent_Data_Gate_Config_Fingerprint:PINNED_GATE_CONFIG_FINGERPRINT,Target_Acceptance_Binding_ID:"AB",Preparation_Anchor_ID:"PA",Final_Activation_Approval_ID:"FAA",Migration_Execution_Manifest_ID:"M",AGENTS_Target_Revision:"rev",Predecessor_Committed_Cutover_ID:"old"};
+const d1Members=[{Manifest_Set_ID:"MSET1",Task_ID:"US_JAPAN_FX_POLICY",Manifest_File_ID:MAN,Manifest_Fingerprint:"MF1",Projection_State:"ACTIVE"}];
+class D1Fixture extends FakeReader {
+  selected=true; unavailable=false; drift=false; published="time"; legacyCalls=0;
+  override async readDriveText(id:string){
+    const t=await super.readDriveText(id);
+    return id===AGENTS_FILE_ID&&this.selected?t.replace(LEGACY_AUTHORITY_LOCATOR,D1_AUTHORITY_LOCATOR):t;
+  }
+  async readD1AuthorityGeneration(){
+    if(this.unavailable)throw new Error("fixture D1 unavailable");
+    return parseAuthorityGeneration({tuple:["scope","CUT",10,"RS1","MSET1",PINNED_GATE_CONFIG_FINGERPRINT,"WFSET",this.published],dependenciesJson:JSON.stringify({cutover:d1Cutover,manifestMembers:d1Members})});
+  }
+  override async readSheet(id:string,sheet:string,range:string):Promise<string[][]>{
+    if(id===REPOSITORY_CUTOVER_CONTROL_ID&&sheet==="Authority_Publication"){this.legacyCalls++;if(this.selected)throw new Error("legacy path called in D1");}
+    if(id===REPOSITORY_CUTOVER_CONTROL_ID&&sheet==="Cutovers"){
+      const row={...d1Cutover,Cutover_State:"COMPLETE",MIGRATION_WRITE_FENCE_State:"RELEASED",Target_Registry_Fingerprint:this.drift?"wrong":"RF"};
+      return [Object.keys(row),Object.values(row)];
+    }
+    return super.readSheet(id,sheet,range);
+  }
+}
+const d1=new D1Fixture();
+const d1cp=await loadControlPlane(d1,"US_JAPAN_FX_POLICY");
+assert.equal(d1cp.authority.activationEpoch,"10");
+await d1cp.assertAuthorityFresh();
+assert.equal(d1.legacyCalls,0);
+d1.published="later";
+await assert.rejects(()=>d1cp.assertAuthorityFresh(),/AUTHORITY_GENERATION_DRIFT/);
+d1.published="time";d1.drift=true;
+await assert.rejects(()=>d1cp.assertAuthorityFresh(),/AUTHORITY_CUTOVER_COMPANION_DRIFT/);
+d1.drift=false;d1.unavailable=true;
+await assert.rejects(()=>d1cp.assertAuthorityFresh(),/fixture D1 unavailable/);
+assert.equal(d1.legacyCalls,0);
+const old=new D1Fixture();old.selected=false;
+const oldcp=await loadControlPlane(old,"US_JAPAN_FX_POLICY");
+old.selected=true;
+await assert.rejects(()=>oldcp.assertAuthorityFresh(),/AUTHORITY_SELECTOR_DRIFT/);
+assert.equal(old.legacyCalls,1);
+const noFallback=new D1Fixture();noFallback.unavailable=true;
+await assert.rejects(()=>loadControlPlane(noFallback,"US_JAPAN_FX_POLICY"),/fixture D1 unavailable/);
+assert.equal(noFallback.legacyCalls,0);
+console.log("candidate_d1_loader_and_stale_selector: PASS");

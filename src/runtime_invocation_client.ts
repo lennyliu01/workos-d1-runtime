@@ -292,11 +292,18 @@ export async function runIssueEvent(event: any, runtimeSecret: string, fetchImpl
 }
 
 
+export function assertCandidateIssueAdmission(event: any): void {
+  const parsed = parseIssueInvocation(String(event?.issue?.title ?? ""), String(event?.issue?.body ?? ""), Number(event?.issue?.number));
+  if (parsed.operation === "READ" || parsed.operation === "WRITE") throw new Error("AUTHORITY_BOUNDARY_ADMISSION_UNBOUND");
+}
+
 async function cli(): Promise<void> {
   const eventPath = process.argv[2] ?? process.env.GITHUB_EVENT_PATH;
   const secret = process.env.RUNTIME_SECRET;
   if (!eventPath || !secret) throw new Error("ISSUE_ADAPTER_CLI_CONFIGURATION_MISSING");
   const event = JSON.parse(await readFile(eventPath, "utf8"));
+  // Candidate legacy issue adapter must not mint admission from issue text.
+  assertCandidateIssueAdmission(event);
   console.log(await runIssueEvent(event, secret));
 }
 

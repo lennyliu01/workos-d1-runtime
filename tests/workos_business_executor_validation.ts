@@ -151,3 +151,9 @@ const invalidRoleClient:any={responses:{create:async()=>({id:"r3",output:[],outp
 await assert.rejects(()=>runStructuredModelContext(invalidRoleClient,{context:"RW_MONITOR",taskId:"ROLLING_WEDGE_INVESTMENT",callerIdentity:"MONITOR",instructionText:"spec",runtimeProfileText:"profile",input:{},kind:"ROLE"},{workosRead:async()=>({}),workosWrite:async()=>({}),marketQuote:async()=>({}),sourceVerify:async()=>({})}),/MODEL_ROLE_RESULT_INVALID/);
 
 console.log("workos_business_executor_validation: PASS");
+
+let deniedTransportCalls=0;
+const staleCp={gate:baseGate(),assertAuthorityFresh:async()=>{throw new Error("AUTHORITY_SELECTOR_DRIFT");}};
+await assert.rejects(()=>invokeWriteWithFinality(staleCp,writeRequest,"secret",async()=>{deniedTransportCalls++;throw new Error("unexpected transport");}),/AUTHORITY_SELECTOR_DRIFT/);
+assert.equal(deniedTransportCalls,0);
+console.log("candidate_business_stale_context: PASS");
