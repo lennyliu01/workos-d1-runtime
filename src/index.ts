@@ -1,4 +1,4 @@
-import { handleWorkOsCandidatePersistence } from "./workos_candidate";
+import { PUBLICATION_PATH, handlePublicationOperation, denyUnfencedBusinessIngress, type PublicationBindingEnv } from "./authority_publication_binding.js";
 import { AUTHORITY_READ_PATH, handleAuthorityRead } from "./authority_reader_binding";
 
 type ExecutionSurface = "CHAT" | "WORK";
@@ -30,7 +30,7 @@ interface D1Database {
   prepare(query: string): D1PreparedStatement;
 }
 
-interface Env {
+interface Env extends PublicationBindingEnv {
   DB: D1Database;
   RUNTIME_SECRET?: string;
   AUTHORITY_READER_SECRET?: string;
@@ -664,6 +664,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === AUTHORITY_READ_PATH) return handleAuthorityRead(request, env);
+    if (url.pathname === PUBLICATION_PATH) return handlePublicationOperation(request, env);
 
     if (request.method === "GET" && url.pathname === "/") {
       return Response.json({
@@ -701,7 +702,7 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/candidate/workos-persistence") {
-      return handleWorkOsCandidatePersistence(request, env);
+      return denyUnfencedBusinessIngress();
     }
 
     return Response.json(
